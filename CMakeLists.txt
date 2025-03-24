@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(ptb)
+add_compile_options(-pg -Og)
+add_link_options(-pg -Og)
+add_subdirectory(fast_float)
+add_executable(ptb_demo ptb_demo.cpp)
+target_link_libraries(ptb_demo PRIVATE fast_float)
