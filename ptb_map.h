@@ -108,6 +108,9 @@ void ptb_free_map(ptb_map* map);
 #ifdef PTB_MAP_IMPL
 /* === BEGIN IMPLEMENTATION === */
 
+#include <stdint.h> // for ptrdiff_t with string parsing
+#include <stddef.h> // for intptr_t, with string parsing
+
 #ifndef PTB_ASSERT
 #include <assert.h>
 #define PTB_ASSERT(expr) assert(expr)
@@ -115,7 +118,10 @@ void ptb_free_map(ptb_map* map);
 
 #ifndef PTB_STRTOD
 #include <stdlib.h>
-#define PTB_STRTOD strtod
+#define PTB_STRTOD ptbm__strtod
+double ptbm__strtod(const char* start, const char** end) {
+  return strtod(start, (char**)end);
+}
 #endif
 
 #ifndef PTB_MALLOC
@@ -139,6 +145,15 @@ static void ptb__cross_vec3(const float* a, const float* b, float* r) {
   r[0] = a[1] * b[2] - a[2] * b[1];
   r[1] = a[2] * b[0] - a[0] * b[2];
   r[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+static void ptb__copy_memory(void* dest, const void* src, int bytes) {
+  char* d = (char*)dest;
+  const char* s = (const char*)src;
+
+  for (int i = 0; i < bytes; i++) {
+    d[i] = s[i];
+  }
 }
 
 static void ptb__zero_memory(void* memory, int bytes) {
@@ -225,96 +240,50 @@ typedef enum ptbm__scope_type {
   PTBM__SCOPE_BRUSH,
 } ptbm__scope_type;
 
-typedef struct ptbm__parser {
-  const char* source;
-  int length;
-  int head;
-} ptbm__parser;
-
-static int ptbm__is_valid(const ptbm__parser* parser) {
-  return parser->head < parser->length;
+static void ptbm__consume_until_at(const char** head, char value) {
+  while (**head != value)
+    (*head)++;
 }
 
-static char ptbm__peek_char(const ptbm__parser* parser, int offset) {
-  return parser->source[parser->head + offset];
+static void ptbm__consume_until_before(const char** head, char value) {
+  ptbm__consume_until_at(head, value);
+  (*head)--;
 }
 
-static char ptbm__consume_char(ptbm__parser* parser) {
-  char result = parser->source[parser->head];
-  if (ptbm__is_valid(parser)) parser->head++;
+static void ptbm__consume_until_after(const char** head, char value) {
+  ptbm__consume_until_at(head, value);
+  (*head)++;
+}
+
+static void ptbm__consume_whitespace(const char** head) {
+  while (**head == ' ')
+    (*head)++;
+}
+
+static PTB_REAL ptbm__consume_number(const char** head) {
+  const char* end;
+  const char* start = *head;
+  PTB_REAL value = PTB_STRTOD(start, &end);
+  *head = end;
+  return value;
+}
+
+static char* ptbm__consume_string(const char** head, char value) {
+  ptbm__consume_until_after(head, value);
+  const char* start = *head;
+  ptbm__consume_until_at(head, value);
+  const char* end = *head;
+  (*head)++;
+
+  ptrdiff_t result_length = (intptr_t)end - (intptr_t)start;
+  char* result = (char*)PTB_MALLOC(result_length + 1);
+  ptb__copy_memory(result, start, result_length);
+  result[result_length] = '\0';
   return result;
 }
 
-static void ptbm__consume_until_inclusive(ptbm__parser* parser, char value) {
-  while (ptbm__is_valid(parser)) {
-    // Consume everything up to (and including) the desired character
-    if (ptbm__consume_char(parser) == value) break;
-  }
-}
-
-static void ptbm__consume_whitespace(ptbm__parser* parser) {
-  while (ptbm__is_valid(parser)) {
-    char value = ptbm__peek_char(parser, 0);
-
-    int is_space = value == ' ';
-    int is_tab = value == '\t';
-
-    if (is_space || is_tab) {
-      ptbm__consume_char(parser);
-    } 
-    else {
-      break;
-    } 
-  }
-}
-
-static PTB_REAL ptbm__consume_number(ptbm__parser* parser) {
-  char* end;
-  const char* start = parser->source + parser->head;
-  PTB_REAL result = PTB_STRTOD(start, &end);
-  int distance = end - start;
-  parser->head += distance;
-  return result;
-}
-
-static char* ptbm__consume_string(ptbm__parser* parser, char value) {
-  // Skip everything until we find the first delimiter
-  ptbm__consume_until_inclusive(parser, value);
-
-  char* string = (char*)PTB_MALLOC(8);
-  int string_length = 0;
-  int string_capacity = 8;
-
-  while (ptbm__is_valid(parser)) {
-    // Consume until we reach the second delimiter
-    char current_char = ptbm__consume_char(parser);
-
-    if (current_char != value) {
-      // Check to see if string buffer needs to grow
-      if (string_length + 1 >= string_capacity) {
-        string_capacity *= 2;
-        string = (char*)PTB_REALLOC(string, string_capacity);
-      }
-
-      string_length++;
-      string[string_length - 1] = current_char;
-    }
-    else break;
-  }
-
-
-  // Potentially expand and add a null terminator
-  if (string_length + 1 >= string_capacity) {
-    string_capacity++;
-    string = (char*)PTB_REALLOC(string, string_capacity);
-  }
-  string[string_length] = '\0';
-
-  return string;
-}
-
-static ptbm__line_type ptbm__identify_line(const ptbm__parser* parser) {
-  switch (ptbm__peek_char(parser, 0)) {
+static ptbm__line_type ptbm__identify_line(const char** head) {
+  switch (**head) {
     case '/': return PTBM__LINE_COMMENT;
     case '{': return PTBM__LINE_SCOPE_START;
     case '}': return PTBM__LINE_SCOPE_END;
@@ -355,11 +324,8 @@ typedef struct ptbm__entity_node {
 }ptbm__entity_node;
 
 ptb_map* ptb_load_map_source(const char* source, int source_len) {
-  ptbm__parser ctx;
-  ctx.head = 0;
-  ctx.source = source;
-  ctx.length = source_len;
-
+  const char* head = source;
+  const char* end = source + source_len + 1;
   ptbm__scope_type scope = PTBM__SCOPE_MAP;
 
   ptbm__entity_node* entity_list = NULL;
@@ -369,11 +335,11 @@ ptb_map* ptb_load_map_source(const char* source, int source_len) {
   ptbm__entity_node* scoped_entity = NULL;
   ptbm__brush_node* scoped_brush = NULL;
 
-  while (ptbm__is_valid(&ctx)) {
+  while (head < end) {
     // Leading whitespace does not affect the meaning of a line
-    ptbm__consume_whitespace(&ctx);
+    ptbm__consume_whitespace(&head);
 
-    switch (ptbm__identify_line(&ctx)) {
+    switch (ptbm__identify_line(&head)) {
       case PTBM__LINE_INVALID:
       case PTBM__LINE_COMMENT: {
         // Don't do anything with a comment or invalid line
@@ -476,8 +442,8 @@ ptb_map* ptb_load_map_source(const char* source, int source_len) {
         scoped_entity->property_list_length++;
         
         // Read the key-value pair of strings into the new property
-        property->key = ptbm__consume_string(&ctx, '\"');
-        property->value = ptbm__consume_string(&ctx, '\"');
+        property->key = ptbm__consume_string(&head, '\"');
+        property->value = ptbm__consume_string(&head, '\"');
         break;
       }
 
@@ -514,11 +480,11 @@ ptb_map* ptb_load_map_source(const char* source, int source_len) {
         PTB_REAL p[3][3];
 
         for (int i = 0; i < 3; i++) {
-          ptbm__consume_until_inclusive(&ctx, '(');
-          p[i][0] = ptbm__consume_number(&ctx);
-          p[i][1] = ptbm__consume_number(&ctx);
-          p[i][2] = ptbm__consume_number(&ctx);
-          ptbm__consume_until_inclusive(&ctx, ')');
+          ptbm__consume_until_after(&head, '(');
+          p[i][0] = ptbm__consume_number(&head);
+          p[i][1] = ptbm__consume_number(&head);
+          p[i][2] = ptbm__consume_number(&head);
+          ptbm__consume_until_after(&head, ')');
         }
 
         // Calculate the normal and plane constant from the points
@@ -529,29 +495,43 @@ ptb_map* ptb_load_map_source(const char* source, int source_len) {
         f->plane_c = ptb__dot_vec3(f->plane_normal, p[0]);
 
         // Now, read the texture string name
-        f->texture_name = ptbm__consume_string(&ctx, ' ');
+        f->texture_name = ptbm__consume_string(&head, ' ');
 
         // Next, 2 blocks of uv information.
         for (int i = 0; i < 2; i++) {
-          ptbm__consume_until_inclusive(&ctx, '[');
-          f->texture_uv[i][0] = ptbm__consume_number(&ctx);
-          f->texture_uv[i][1] = ptbm__consume_number(&ctx);
-          f->texture_uv[i][2] = ptbm__consume_number(&ctx);
-          f->texture_offset[i] = ptbm__consume_number(&ctx);
-          ptbm__consume_until_inclusive(&ctx, ']');
+          ptbm__consume_until_after(&head, '[');
+          f->texture_uv[i][0] = ptbm__consume_number(&head);
+          f->texture_uv[i][1] = ptbm__consume_number(&head);
+          f->texture_uv[i][2] = ptbm__consume_number(&head);
+          f->texture_offset[i] = ptbm__consume_number(&head);
+          ptbm__consume_until_after(&head, ']');
         }
 
         // Finally, some closing texture info
-        f->texture_rotation = ptbm__consume_number(&ctx);
-        f->texture_scale[0] = ptbm__consume_number(&ctx);
-        f->texture_scale[1] = ptbm__consume_number(&ctx);
+        f->texture_rotation = ptbm__consume_number(&head);
+        f->texture_scale[0] = ptbm__consume_number(&head);
+        f->texture_scale[1] = ptbm__consume_number(&head);
         break;
       }
     } 
 
-    // Finished parsing the current line: while loop
-    // continues until we run out of characters to process
-    ptbm__consume_until_inclusive(&ctx, '\n');
+    // Finished parsing the current line: consume to 
+    // the next newline or until we finish the file
+    for (;;) {
+      int reached_newline = *head == '\n';
+      int reached_end = head >= end;
+
+      if (reached_newline) {
+        head++;
+        break;
+      }
+      if (reached_end) {
+        break;
+      }
+      else {
+        head++;
+      }
+    }
   }
 
   // We finished parsing the entire file structure.

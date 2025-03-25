@@ -2,8 +2,8 @@
 #include "fast_float/fast_float.h"
 
 // Apply some overrides for the ptb_map implementation
-//#define PTB_STRTOD fast_strtod
-//static PTB_REAL fast_strtod(const char* start, char** end);
+#define PTB_STRTOD fast_strtod
+static PTB_REAL fast_strtod(const char* start, const char** end);
 
 // Now actually generate the source code
 #define PTB_MAP_IMPL
@@ -42,8 +42,8 @@ static void print_map_info(const char* name, ptb_map* map) {
   }
 }
 
-static PTB_REAL fast_strtod(const char* start, char** end) {
-  PTB_REAL value;
+static PTB_REAL fast_strtod(const char* start, const char** end) {
+  PTB_REAL value {};
   auto result = fast_float::from_chars(start, start + 512, value);
   *end = const_cast<char*>(result.ptr);
   return value;
