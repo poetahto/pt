@@ -6,7 +6,7 @@
 static PTB_REAL fast_strtod(const char* start, const char** end);
 
 // Now actually generate the source code
-#define PTB_MAP_IMPL
+#define PTB_MAP_IMPLEMENTATION
 #include "ptb_map.h"
 
 static void print_map_info(const char* name, ptb_map* map);

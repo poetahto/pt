@@ -1,61 +1,102 @@
 /* 
-    STB-style parser for `.map` files.
-    Tested with Trenchbroom, could work with other level editors.
+    ptb_map - v0.01 - public domain `.map` loader
+                            No warranty implied; use at your own risk
 
     Do this:
-      #define PTB_MAP_IMPL
-    before you include this file in *one* C or C++ file to create the 
-    implementation.
+      #define PTB_MAP_IMPLEMENTATION
+    before you include this file in *one* C or C++ file to 
+    create the implementation.
 
-    TODO:
-      Merge `func_group` into worldspawn on scope decrease
+    BASIC USAGE:
+      int entity_count;
+      ptm_entity* entities = ptm_load("example.map", &entity_count);
 
-      Consider simplifying parser functions: I think we
-        can make due with simply incrementing a typed pointer?
+      for (int eid = 0; eid < entity_count; eid++) {
+        ptm_entity* entity = &entities[eid];
 
-      Usage code in this documentation
+        for (int pid = 0; pid < entity->property_count; pid++) {
+          ptm_property* property = &entity->properties[pid];
+        }
 
-      License/author info in this documentation
+        for (int bid = 0; bid < entity->brush_count; bid++) {
+          ptm_brush* brush = &entity->brushes[bid];
 
-      Feature parity with that cool really old repository
-        (CSG union, meshing, texture uv calculation)
+          for (int fid = 0; fid < brush->face_count; fid++) {
+            ptm_face* face = &brush->faces[fid];
+          }
+        }
+      }
 
-      Other cool map-related things (bsps, collision hulls, vis/portals, quake movement?)
-
-      Another STB-style library for WAD loading would be cool!
-        Or if we embed it into this for one an all-in-one quick 3d prototype tool
-
-    QUICK NOTES:
-      The parser is bottlenecked heavily by the "strtod" function (almost
-      everything inside a map file is a number).
-      If performance is an issue, consider re-defining PTB_STRTOD to a
-      faster implementation.
+      ptm_free(entities);
 
     OPTIONS:
-      #define PTB_ASSERT to replace <assert.h>
-      #define PTB_MALLOC/FREE/REALLOC to replace heap allocator
-      #define PTB_STRTOD to replace number parsing
-      #define PTB_REAL to change precision for floating points
+      #define PTB_ASSERT(expr)
+        change how assertions are enforced
+
+      #define PTB_MALLOC/FREE/REALLOC
+        change allocation strategy
+
+      #define PTB_REAL <float|double|custom>
+        change precision of all real numbers (default to double)
+
+      #define PTB_STRTOD
+        re-define to change how real numbers are parsed, defaults 
+        to strtod/strtof. this can be a bottleneck: consider 
+        replacing for better performance
 
     BACKGROUND:
       ".map" files define brush-based levels for games in a simple, 
       plaintext format. They were originally used in the first quake 
       game, and later modified for its descendants (half-life, ect.)
 
-      While brush-based level design has fallen out of favor in mainstream 
-      level design, it remains a powerful prototyping and blockout tool, 
-      along with capturing a retro aesthetic.
+      While brush-based level design has fallen out of favor in many 
+      games, it remains a powerful prototyping and blockout tool, 
+      along with having a retro aesthetic. There are also powerful 
+      ".map" editors that are very mature, such as Trenchbroom.
 
       A map file is structured to not just define the visual layout of 
       a scene, but also the gameplay properties. Indeed, a map file is 
-      simple a list of entities which may or may not be associated with 
-      brush (think: lights, player spawn positions, ambient noise 
-      emitters). These are all defined with key-value pairs which can be 
-      interpreted by the engine at runtime.
+      nothing more than a list of entities which may or may not be 
+      associated with a mesh (think: lights, player spawn positions, 
+      ambient noise emitters). These are all defined by key-value 
+      pairs which can be interpreted by the engine.
+
+      The contents of a map file must be processed in several steps
+      before they can be rendered in a game.
+
+      1) Brushes, which are defined by lists of clippng planes.
+      Intuitive to edit, impossible to render.
+
+      2) Geometry, which is defined by lists of faces that contain
+      edges, vertices, and texture info. Can be useful when editing,
+      still impossible to render due to lack of triangles.
+
+      3) Models, which are lists of meshes: each of which containing
+      a list of vertex positions, triangle indices, and a texture.
+      Not the most editable, but finally possible to send to GPU.
 
     REFERENCE:
       https://book.leveldesignbook.com/appendix/resources/formats/map
       https://github.com/stefanha/map-files
+
+    LICENSE:
+      This software is dual-licensed to the public domain and under 
+      the following license: you are granted a perpetual, irrevocable 
+      license to copy, modify, publish, and distribute this file 
+      as you see fit.
+            
+    TODO:
+      Merge `func_group` into worldspawn on scope decrease
+
+      Feature parity with that cool really old repository
+        (CSG union, meshing, texture uv calculation)
+
+      Other cool map-related things (bsps, collision hulls, 
+        vis/portals, quake movement?)
+
+      Another STB-style library for WAD loading would be cool!
+        Or if we embed it into this for one an all-in-one 
+        quick 3d prototype tool
  */
 
 #ifndef PTB_MAP_H

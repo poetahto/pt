@@ -1,4 +1,4 @@
-#define PTB_MAP_IMPL
+#define PTB_MAP_IMPLEMENTATION
 #include "ptb_map.h"
 #include <stdio.h>
 
