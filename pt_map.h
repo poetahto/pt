@@ -8,11 +8,10 @@
     create the implementation.
 
     BASIC USAGE:
-      int entity_count;
-      ptm_entity* entities = ptm_load("example.map", &entity_count);
+      pt_map* map = ptm_load("example.map");
 
-      for (int eid = 0; eid < entity_count; eid++) {
-        ptm_entity* entity = &entities[eid];
+      for (int eid = 0; eid < map->entity_count; eid++) {
+        ptm_entity* entity = &map->entities[eid];
 
         for (int pid = 0; pid < entity->property_count; pid++) {
           ptm_property* property = &entity->properties[pid];
@@ -27,7 +26,7 @@
         }
       }
 
-      ptm_free(entities);
+      ptm_free(map);
 
     OPTIONS:
       #define PTB_ASSERT(expr)

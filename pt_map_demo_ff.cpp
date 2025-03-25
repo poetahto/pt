@@ -1,15 +1,12 @@
 #include "ptb_map.h"
 #include "fast_float/fast_float.h"
+#include <stdio.h>
 
-// Apply some overrides for the ptb_map implementation
-#define PTB_STRTOD fast_strtod
-static PTB_REAL fast_strtod(const char* start, const char** end);
-
-// Now actually generate the source code
-#define PTB_MAP_IMPLEMENTATION
-#include "ptb_map.h"
+#define PTM_REAL double
+#define PTM_STR_TO_REAL fast_strtod
 
 static void print_map_info(const char* name, ptb_map* map);
+static double fast_strtod(const char* start, const char** end);
 
 int main(int argc, char** argv) {
   if (argc < 2) {
@@ -18,13 +15,13 @@ int main(int argc, char** argv) {
   }
 
   const char* map_name = argv[1];
-  ptb_map* map = ptb_load_map(map_name);
+  pt_map* map = ptm_load(map_name);
   print_map_info(map_name, map);
-  ptb_free_map(map);
+  ptm_free(map);
   return 0;
 }
 
-static void print_map_info(const char* name, ptb_map* map) {
+static void print_map_info(const char* name, pt_map* map) {
   // print general info
   printf("%s (%i entities)\n", name, map->entity_count);
 
@@ -48,3 +45,6 @@ static PTB_REAL fast_strtod(const char* start, const char** end) {
   *end = const_cast<char*>(result.ptr);
   return value;
 }
+
+#define PTM_MAP_IMPLEMENTATION
+#include "ptb_map.h"

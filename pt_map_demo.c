@@ -1,5 +1,4 @@
-#define PTB_MAP_IMPLEMENTATION
-#include "ptb_map.h"
+#include "pt_map.h"
 #include <stdio.h>
 
 static void print_map_info(const char* name, ptb_map* map);
@@ -11,13 +10,13 @@ int main(int argc, char** argv) {
   }
 
   const char* map_name = argv[1];
-  ptb_map* map = ptb_load_map(map_name);
+  pt_map* map = ptm_load(map_name);
   print_map_info(map_name, map);
-  ptb_free_map(map);
+  ptm_free(map);
   return 0;
 }
 
-static void print_map_info(const char* name, ptb_map* map) {
+static void print_map_info(const char* name, pt_map* map) {
   // print general info
   printf("%s (%i entities)\n", name, map->entity_count);
 
@@ -34,3 +33,6 @@ static void print_map_info(const char* name, ptb_map* map) {
     }
   }
 }
+
+#define PT_MAP_IMPLEMENTATION
+#include "pt_map.h"
