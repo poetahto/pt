@@ -32,8 +32,8 @@
       #define PTM_ASSERT(expr)
         change how assertions are enforced
 
-      #define PTM_MALLOC/FREE/REALLOC
-        change allocation strategy
+      #define PTM_ARENA_CREATE/ALLOC/FREE
+        change arena allocation strategy
 
       #define PTM_HASH/CREATE_HASH
         change hash type/strategy
@@ -139,15 +139,15 @@ typedef struct ptm_map {
   ptm_entity* entities;
   int entity_count;
 
-  struct ptm__arena* _arena;
-  struct ptm__arena* _string_arena;
+  void* _arena;
+  void* _string_arena;
 } ptm_map;
 
 #ifndef PTM_NO_STDIO
-ptm_map* ptm_load(const char* file_path);
+void ptm_load(const char* file_path, ptm_map* map);
 #endif 
 
-ptm_map* ptm_load_source(const char* source, int source_len);
+void ptm_load_source(const char* source, int source_length, ptm_map* map);
 void ptm_free(ptm_map* map);
 
 /* === END HEADER === */
@@ -164,13 +164,6 @@ void ptm_free(ptm_map* map);
 #define PTM_ASSERT(expr) assert(expr)
 #endif
 
-#ifndef PTM_MALLOC
-#include <stdlib.h>
-#define PTM_MALLOC(bytes) malloc(bytes)
-#define PTM_FREE(buffer) free(buffer)
-#define PTM_REALLOC(buffer, bytes) realloc(buffer, bytes)
-#endif
-
 #ifndef PTM_CREATE_HASH
 #define PTM_CREATE_HASH(data, size) ptm__create_hash_fnv32(data, size)
 PTM_HASH ptm__create_hash_fnv32(const char* data, int size) {
@@ -183,7 +176,7 @@ PTM_HASH ptm__create_hash_fnv32(const char* data, int size) {
 
   return hash;
 }
-#endif
+#endif 
 
 #ifndef PTM_STRTOR
 #include <stdlib.h>
@@ -198,6 +191,85 @@ PTM_REAL ptm__strtor(const char* start, const char** end) {
 #endif
 }
 #endif
+
+#ifndef PTM_ARENA_CREATE
+
+// Default arena implementation, uses malloc/free and dynamically grows
+// in chunks when reaching max capacity.
+
+#include <stdlib.h>
+
+#define PTM_ARENA_CREATE(size) ptm__arena_create(size)
+#define PTM_ARENA_ALLOC(arena, bytes) ptm__arena_alloc(arena, bytes)
+#define PTM_ARENA_FREE(arena) ptm__arena_free(arena)
+
+static void* ptm__arena_create(int size);
+static void* ptm__arena_alloc(void* opaque_arena, int bytes);
+static void ptm__arena_free(void* opaque_arena);
+
+typedef struct ptm__arena_chunk {
+  struct ptm__arena_chunk* next_chunk;
+  void* data;
+  int head;
+  int size;
+} ptm__arena_chunk;
+
+typedef struct ptm__arena {
+  ptm__arena_chunk* chunk_list;
+  ptm__arena_chunk* chunk_head;
+} ptm__arena;
+
+static ptm__arena_chunk* ptm__arena_create_chunk(int size) {
+  ptm__arena_chunk* chunk;
+  chunk = (ptm__arena_chunk*)malloc(sizeof(ptm__arena_chunk));
+  chunk->data = malloc(size);
+  chunk->head = 0;
+  chunk->size = size;
+  chunk->next_chunk = NULL; 
+  return chunk;
+}
+
+static void* ptm__arena_create(int size) {
+  ptm__arena_chunk* initial_chunk;
+  initial_chunk = ptm__arena_create_chunk(size);
+
+  ptm__arena* arena;
+  arena = (ptm__arena*)malloc(sizeof(ptm__arena));
+  arena->chunk_list = initial_chunk;
+  arena->chunk_head = initial_chunk;
+  return arena;
+}
+
+static void* ptm__arena_alloc(void* opaque_arena, int bytes) {
+  ptm__arena* arena = (ptm__arena*)opaque_arena;
+  ptm__arena_chunk* chunk = arena->chunk_head;
+  int is_full = chunk->head + bytes > chunk->size;
+
+  if (is_full) {
+    chunk = ptm__arena_create_chunk(chunk->size * 2);
+    arena->chunk_head->next_chunk = chunk;
+    arena->chunk_head = chunk;
+  }
+
+  void* result = ((char*)chunk->data) + chunk->head;
+  chunk->head += bytes;
+  return result;
+}
+
+static void ptm__arena_free(void* opaque_arena) {
+  ptm__arena* arena = (ptm__arena*)opaque_arena;
+  ptm__arena_chunk* chunk = arena->chunk_list;
+
+  while (chunk != NULL) {
+    free(chunk->data);
+    ptm__arena_chunk* next_chunk = chunk->next_chunk;
+    free(chunk);
+    chunk = next_chunk;
+  }
+
+  free(arena);
+}
+#endif // default arena implementation
 
 static void ptm__subtract_vec3(const float* a, const float* b, float* r) {
   r[0] = a[0] - b[0];
@@ -228,70 +300,6 @@ static void ptm__zero_memory(void* memory, int bytes) {
 
   for (int i = 0; i < bytes; i++)
     m[i] = 0;
-}
-
-typedef struct ptm__arena_chunk {
-  struct ptm__arena_chunk* next;
-  void* data;
-  int head;
-} ptm__arena_chunk;
-
-typedef struct ptm__arena {
-  ptm__arena_chunk* chunk_list;
-  ptm__arena_chunk* current_chunk;
-  int chunk_capacity;
-} ptm__arena;
-
-static void ptm__add_arena_chunk(ptm__arena* arena) {
-  int size = sizeof(ptm__arena_chunk);
-  ptm__arena_chunk* chunk = (ptm__arena_chunk*)PTM_MALLOC(size);
-  chunk->data = PTM_MALLOC(arena->chunk_capacity);
-  chunk->head = 0;
-  chunk->next = NULL; 
-
-  if (arena->current_chunk == NULL) {
-    arena->chunk_list = chunk;
-    arena->current_chunk = chunk;
-  }
-  else {
-    arena->current_chunk->next = chunk;
-    arena->current_chunk = chunk;
-  }
-}
-
-static ptm__arena* ptm__create_arena(int chunk_capacity) {
-  ptm__arena* arena = PTM_MALLOC(sizeof(ptm__arena));
-  arena->chunk_capacity = chunk_capacity;
-  arena->chunk_list = NULL;
-  arena->current_chunk = NULL;
-  ptm__add_arena_chunk(arena);
-  return arena;
-}
-
-static void* ptm__arena_alloc(ptm__arena* arena, int bytes) {
-  PTM_ASSERT(bytes < arena->chunk_capacity);
-
-  if (arena->current_chunk->head + bytes > arena->chunk_capacity) {
-    ptm__add_arena_chunk(arena);
-  }
-
-  ptm__arena_chunk* chunk = arena->current_chunk;
-  void* result = ((char*)chunk->data) + chunk->head;
-  chunk->head += bytes;
-  return result;
-}
-
-static void ptm__free_arena(ptm__arena* arena) {
-  ptm__arena_chunk* chunk = arena->chunk_list;
-
-  while (chunk != NULL) {
-    PTM_FREE(chunk->data);
-    ptm__arena_chunk* next = chunk->next;
-    PTM_FREE(chunk);
-    chunk = next;
-  }
-
-  PTM_FREE(arena);
 }
 
 static void ptm__consume_until_at(const char** head, char value) {
@@ -326,8 +334,8 @@ typedef struct ptm__string_cache_node {
 typedef struct ptm__string_cache {
   ptm__string_cache_node* node_list;
   ptm__string_cache_node* node_head;
-  ptm__arena* node_arena;
-  ptm__arena* value_arena;
+  void* node_arena;
+  void* value_arena;
 }ptm__string_cache;
 
 static char* ptm__consume_string(const char** head, char value, 
@@ -354,14 +362,12 @@ static char* ptm__consume_string(const char** head, char value,
   }
 
   // Cache did not contain string: alloc new one
-  int size = sizeof(ptm__string_cache_node);
-
   node = (ptm__string_cache_node*)
-      ptm__arena_alloc(cache->node_arena, size);
+      PTM_ARENA_ALLOC(cache->node_arena, sizeof(ptm__string_cache_node));
 
   node->next = NULL;
   node->hash = hash;
-  node->value = (char*)ptm__arena_alloc(cache->value_arena, length + 1);
+  node->value = (char*)PTM_ARENA_ALLOC(cache->value_arena, length + 1);
   ptm__copy_memory(node->value, start, length);
   node->value[length] = '\0';
 
@@ -434,16 +440,16 @@ typedef struct ptm__entity_node {
   int property_list_length;
 }ptm__entity_node;
 
-ptm_map* ptm_load_source(const char* source, int source_len) {
+void ptm_load_source(const char* source, int source_length, ptm_map* map) {
   const char* head = source;
-  const char* end = source + source_len + 1;
+  const char* end = source + source_length + 1;
   ptm__scope_type scope = PTMM__SCOPE_MAP;
 
   ptm__string_cache cache;
   cache.node_list = NULL;
   cache.node_head = NULL;
-  cache.node_arena = ptm__create_arena(512);
-  cache.value_arena = ptm__create_arena(512);
+  cache.node_arena = PTM_ARENA_CREATE(512);
+  cache.value_arena = PTM_ARENA_CREATE(512);
 
   ptm__entity_node* entity_list = NULL;
   ptm__entity_node* entity_list_head = NULL;
@@ -665,11 +671,11 @@ ptm_map* ptm_load_source(const char* source, int source_len) {
   // for efficient iteration and fast freeing: thus, we
   // compact things with an array allocator and release
   // the old linked lists.
-  ptm__arena* arena = ptm__create_arena(source_len);
+  void* arena = PTM_ARENA_CREATE(source_length);
 
   // Allocate map storage
   int size = sizeof(ptm_entity) * entity_list_length;
-  ptm_entity* entities = (ptm_entity*)ptm__arena_alloc(arena, size);
+  ptm_entity* entities = (ptm_entity*)PTM_ARENA_ALLOC(arena, size);
   int entity_count = 0;
 
   while (entity_list != NULL) {
@@ -677,14 +683,14 @@ ptm_map* ptm_load_source(const char* source, int source_len) {
 
     // Copy entities
     size = sizeof(ptm_brush) * entity_list->brush_list_length;
-    entity->brushes = (ptm_brush*)ptm__arena_alloc(arena, size);
+    entity->brushes = (ptm_brush*)PTM_ARENA_ALLOC(arena, size);
     ptm__brush_node* brush_list = entity_list->brush_list;
 
     while (brush_list != NULL) {
       // Copy brushes
       ptm_brush* brush = &entity->brushes[entity->brush_count++];
       size = sizeof(ptm_brush_face) * brush_list->face_list_length;
-      brush->faces = (ptm_brush_face*)ptm__arena_alloc(arena, size);
+      brush->faces = (ptm_brush_face*)PTM_ARENA_ALLOC(arena, size);
       ptm__brush_face_node* face_list = brush_list->face_list;
 
       while (face_list != NULL) {
@@ -705,8 +711,8 @@ ptm_map* ptm_load_source(const char* source, int source_len) {
 
     // Copy properties
     size = sizeof(char*) * entity_list->property_list_length;
-    entity->property_keys = (char**)ptm__arena_alloc(arena, size);
-    entity->property_values = (char**)ptm__arena_alloc(arena, size);
+    entity->property_keys = (char**)PTM_ARENA_ALLOC(arena, size);
+    entity->property_values = (char**)PTM_ARENA_ALLOC(arena, size);
     ptm__property_node* property_list = entity_list->property_list;
 
     while (property_list != NULL) {
@@ -727,26 +733,23 @@ ptm_map* ptm_load_source(const char* source, int source_len) {
   }
 
   // Clean up old arenas that are no longer used
-  ptm__free_arena(cache.node_arena);
-
-  // Create and return final structure
-  ptm_map* map = (ptm_map*)PTM_MALLOC(sizeof(ptm_map));
+  PTM_ARENA_FREE(cache.node_arena);
+ 
+  // populate final structure
   map->entities = entities;
   map->entity_count = entity_count;
   map->_arena = arena;
   map->_string_arena = cache.value_arena;
-  return map;
 }
 
 void ptm_free(ptm_map* map) {
-  ptm__free_arena(map->_arena);
-  ptm__free_arena(map->_string_arena);
-  PTM_FREE(map);
+  PTM_ARENA_FREE(map->_arena);
+  PTM_ARENA_FREE(map->_string_arena);
 }
 
 #ifndef PTM_NO_STDIO
 #include <stdio.h>
-ptm_map* ptm_load(const char* file_path) {
+void ptm_load(const char* file_path, ptm_map* map) {
   FILE* file; 
 #if defined(_MSC_VER) && _MSC_VER >= 1400
   fopen_s(&file, file_path, "r");
@@ -754,16 +757,14 @@ ptm_map* ptm_load(const char* file_path) {
   file = fopen(file_path, "r");
 #endif
   fseek(file, 0, SEEK_END);
-  int source_len = ftell(file);
+  int source_length = ftell(file);
   fseek(file, 0, SEEK_SET);
-  char* source = (char*)PTM_MALLOC(source_len);
-  fread(source, 1, source_len, file);
+  void* arena = PTM_ARENA_CREATE(source_length);
+  char* source = (char*)PTM_ARENA_ALLOC(arena, source_length);
+  fread(source, 1, source_length, file);
   fclose(file);
-
-  ptm_map* map = ptm_load_source(source, source_len);
-
-  PTM_FREE(source);
-  return map;
+  ptm_load_source(source, source_length, map);
+  PTM_ARENA_FREE(arena);
 }
 #endif
 
