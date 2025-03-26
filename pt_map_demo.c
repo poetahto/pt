@@ -1,3 +1,4 @@
+#define PT_MAP_IMPLEMENTATION
 #include "pt_map.h"
 #include <stdio.h>
 
@@ -17,13 +18,22 @@ int main(int argc, char** argv) {
 }
 
 static void print_map_info(const char* name, ptm_map* map) {
-  // print general info
-  printf("%s (%i entities)\n", name, map->entity_count);
+  int brush_total = 0;
+  int entity_total = map->entity_count;
 
   // print entity info
-  for (int eid = 0; eid < map->entity_count; eid++) {
-    ptb_entity* entity = &map->entities[eid];
-    printf("  entity %i (%i brushes)\n", eid, entity->brush_count);
+  for (int eid = 0; eid < entity_total; eid++) {
+    ptm_entity* entity = &map->entities[eid];
+    brush_total += entity->brush_count;
+    printf("  entity %i ", eid);
+
+    if (entity->brush_count > 0) {
+      const char* plural = entity->brush_count > 1 ? "es" : "";
+      printf("(%i brush%s)\n", entity->brush_count, plural);
+    }
+    else {
+      printf("(point)\n");
+    }
 
     // print properties
     for (int pid = 0; pid < entity->property_count; pid++) {
@@ -32,7 +42,8 @@ static void print_map_info(const char* name, ptm_map* map) {
       printf("    \"%s\" : \"%s\"\n", key, value);
     }
   }
-}
 
-#define PT_MAP_IMPLEMENTATION
-#include "pt_map.h"
+  // print summary
+  putchar('\n');
+  printf("%s: %i entities, %i brushes\n", name, entity_total, brush_total);
+}

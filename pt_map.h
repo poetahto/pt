@@ -3,7 +3,7 @@
                             No warranty implied; use at your own risk
 
     Do this:
-      #define PTM_MAP_IMPLEMENTATION
+      #define PT_MAP_IMPLEMENTATION
     before you include this file in *one* C or C++ file to 
     create the implementation.
 
@@ -41,7 +41,7 @@
       #define PTM_REAL <float|double|custom>
         change precision of all real numbers (default to double)
 
-      #define PTM_STRTOD
+      #define PTM_STRTOR
         re-define to change how real numbers are parsed, defaults 
         to strtod/strtof. this can be a bottleneck: consider 
         replacing for better performance
@@ -88,7 +88,7 @@
       as you see fit.
             
     TODO::
-      Fix string cache half complete work: make more stuff live
+      make more stuff live
         in arenas instead of linked lists (or move linked lists
         into arenas) for better performance, easier freeing
       
@@ -110,7 +110,7 @@
 /* === BEGIN HEADER === */
 
 #define PTM_REAL float
-#define PTM_HASH int
+#define PTM_HASH unsigned int
 
 typedef struct ptm_brush_face {
   PTM_REAL plane_normal[3];
@@ -153,7 +153,7 @@ void ptm_free(ptm_map* map);
 /* === END HEADER === */
 #endif // PTM_MAP_H
 
-#ifdef PTM_MAP_IMPL
+#ifdef PT_MAP_IMPLEMENTATION
 /* === BEGIN IMPLEMENTATION === */
 
 #include <stdint.h> // for ptrdiff_t with string parsing
@@ -172,9 +172,16 @@ void ptm_free(ptm_map* map);
 #endif
 
 #ifndef PTM_CREATE_HASH
-#define PTM_CREATE_HASH(data, size) ptm__create_hash(data, size)
-PTM_HASH ptm__create_hash(const char* data, int size) {
-  // todo: fnv32 impl
+#define PTM_CREATE_HASH(data, size) ptm__create_hash_fnv32(data, size)
+PTM_HASH ptm__create_hash_fnv32(const char* data, int size) {
+  unsigned int hash = 2166136261u;
+
+  for (int i = 0; i < size; i++) {
+    hash ^= *data++;
+    hash *= 16777619u;
+  }
+
+  return hash;
 }
 #endif
 
@@ -252,11 +259,13 @@ static void ptm__add_arena_chunk(ptm__arena* arena) {
   }
 }
 
-static void ptm__init_arena(ptm__arena* arena, int chunk_capacity) {
+static ptm__arena* ptm__create_arena(int chunk_capacity) {
+  ptm__arena* arena = PTM_MALLOC(sizeof(ptm__arena));
   arena->chunk_capacity = chunk_capacity;
   arena->chunk_list = NULL;
   arena->current_chunk = NULL;
   ptm__add_arena_chunk(arena);
+  return arena;
 }
 
 static void* ptm__arena_alloc(ptm__arena* arena, int bytes) {
@@ -266,8 +275,9 @@ static void* ptm__arena_alloc(ptm__arena* arena, int bytes) {
     ptm__add_arena_chunk(arena);
   }
 
-  void* result = ((char*)arena->current_chunk->data) + arena->current_chunk->head;
-  arena->current_chunk->head += bytes;
+  ptm__arena_chunk* chunk = arena->current_chunk;
+  void* result = ((char*)chunk->data) + chunk->head;
+  chunk->head += bytes;
   return result;
 }
 
@@ -276,12 +286,12 @@ static void ptm__free_arena(ptm__arena* arena) {
 
   while (chunk != NULL) {
     PTM_FREE(chunk->data);
-    chunk = chunk->next;
+    ptm__arena_chunk* next = chunk->next;
     PTM_FREE(chunk);
+    chunk = next;
   }
 
-  arena->current_chunk = NULL;
-  arena->chunk_list = NULL;
+  PTM_FREE(arena);
 }
 
 static void ptm__consume_until_at(const char** head, char value) {
@@ -316,12 +326,12 @@ typedef struct ptm__string_cache_node {
 typedef struct ptm__string_cache {
   ptm__string_cache_node* node_list;
   ptm__string_cache_node* node_head;
-  ptm__arena node_arena;
-  ptm__arena value_arena;
+  ptm__arena* node_arena;
+  ptm__arena* value_arena;
 }ptm__string_cache;
 
 static char* ptm__consume_string(const char** head, char value, 
-        ptbm__string_cache* cache) 
+        ptm__string_cache* cache) 
 {
   ptm__consume_until_after(head, value);
   const char* start = *head;
@@ -345,15 +355,15 @@ static char* ptm__consume_string(const char** head, char value,
 
   // Cache did not contain string: alloc new one
   int size = sizeof(ptm__string_cache_node);
-  ptm__string_cache_node* node;
 
   node = (ptm__string_cache_node*)
-      ptm__arena_alloc(&cache->node_arena, size);
+      ptm__arena_alloc(cache->node_arena, size);
 
   node->next = NULL;
   node->hash = hash;
-  node->value = (char*)ptm__arena_alloc(&cache->value_arena, length);
+  node->value = (char*)ptm__arena_alloc(cache->value_arena, length + 1);
   ptm__copy_memory(node->value, start, length);
+  node->value[length] = '\0';
 
   // Update cache linked list with the new string
   if (cache->node_head != NULL) {
@@ -424,7 +434,7 @@ typedef struct ptm__entity_node {
   int property_list_length;
 }ptm__entity_node;
 
-ptm_map* ptm_load_map_source(const char* source, int source_len) {
+ptm_map* ptm_load_source(const char* source, int source_len) {
   const char* head = source;
   const char* end = source + source_len + 1;
   ptm__scope_type scope = PTMM__SCOPE_MAP;
@@ -432,8 +442,8 @@ ptm_map* ptm_load_map_source(const char* source, int source_len) {
   ptm__string_cache cache;
   cache.node_list = NULL;
   cache.node_head = NULL;
-  ptm__init_arena(&cache.node_arena, 512);
-  ptm__init_arena(&cache.value_arena, 512);
+  cache.node_arena = ptm__create_arena(512);
+  cache.value_arena = ptm__create_arena(512);
 
   ptm__entity_node* entity_list = NULL;
   ptm__entity_node* entity_list_head = NULL;
@@ -531,6 +541,11 @@ ptm_map* ptm_load_map_source(const char* source, int source_len) {
 
       case PTMM__LINE_PROPERTY: {
         PTM_ASSERT(scope == PTMM__SCOPE_ENTITY);
+
+        ptm__consume_whitespace(&head);
+        if (*(head + 1) == '_') {
+          break;
+        }
 
         // Add a new property to the scoped entity's list
         int s = sizeof(ptm__property_node);
@@ -650,8 +665,7 @@ ptm_map* ptm_load_map_source(const char* source, int source_len) {
   // for efficient iteration and fast freeing: thus, we
   // compact things with an array allocator and release
   // the old linked lists.
-  ptm__arena* arena = (ptm__arena*)PTM_MALLOC(sizeof(ptm__arena));
-  ptm__init_arena(arena, source_len);
+  ptm__arena* arena = ptm__create_arena(source_len);
 
   // Allocate map storage
   int size = sizeof(ptm_entity) * entity_list_length;
@@ -712,6 +726,9 @@ ptm_map* ptm_load_map_source(const char* source, int source_len) {
     entity_list = next_entity;
   }
 
+  // Clean up old arenas that are no longer used
+  ptm__free_arena(cache.node_arena);
+
   // Create and return final structure
   ptm_map* map = (ptm_map*)PTM_MALLOC(sizeof(ptm_map));
   map->entities = entities;
@@ -721,16 +738,15 @@ ptm_map* ptm_load_map_source(const char* source, int source_len) {
   return map;
 }
 
-void ptm_free_map(ptm_map* map) {
+void ptm_free(ptm_map* map) {
   ptm__free_arena(map->_arena);
   ptm__free_arena(map->_string_arena);
-  PTM_FREE(map->_arena);
   PTM_FREE(map);
 }
 
 #ifndef PTM_NO_STDIO
 #include <stdio.h>
-ptm_map* ptm_load_map(const char* file_path) {
+ptm_map* ptm_load(const char* file_path) {
   FILE* file; 
 #if defined(_MSC_VER) && _MSC_VER >= 1400
   fopen_s(&file, file_path, "r");
@@ -744,7 +760,7 @@ ptm_map* ptm_load_map(const char* file_path) {
   fread(source, 1, source_len, file);
   fclose(file);
 
-  ptm_map* map = ptm_load_map_source(source, source_len);
+  ptm_map* map = ptm_load_source(source, source_len);
 
   PTM_FREE(source);
   return map;
@@ -752,4 +768,4 @@ ptm_map* ptm_load_map(const char* file_path) {
 #endif
 
 /* === END IMPLEMENTATION === */
-#endif // PTM_MAP_IMPL
+#endif // PT_MAP_IMPLEMENTATION
