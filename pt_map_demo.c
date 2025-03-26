@@ -11,37 +11,30 @@ int main(int argc, char** argv) {
   const char* map_file_name = argv[1];
   ptm_map map;
   ptm_load(map_file_name, &map);
+  int total_brushes = 0;
 
-  // process map
-  int brush_total = 0;
-  int entity_total = map.entity_count;
+  // print worldspawn info
+  printf("WORLDSPAWN: %i brushes\n", map.world.brush_count);
+  total_brushes += map.world.brush_count;
 
-  // print entities
-  for (int eid = 0; eid < entity_total; eid++) {
-    ptm_entity* entity = &map.entities[eid];
-    brush_total += entity->brush_count;
-    printf("  entity %i ", eid);
+  for (int i = 0; i < map.world.property_count; i++) {
+    char* key = map.world.property_keys[i];
+    char* value = map.world.property_values[i];
+    printf("  \"%s\" \"%s\"\n", key, value);
+  }
 
-    // print brushes
-    if (entity->brush_count > 0) {
-      const char* plural = entity->brush_count > 1 ? "es" : "";
-      printf("(%i brush%s)\n", entity->brush_count, plural);
-    }
-    else {
-      printf("(point)\n");
-    }
+  // print class info
+  for (int cid = 0; cid < map.class_count; cid++) {
+    ptm_class* class = &map->classes[cid];
+    printf("%s: %i entities\n", class->name, class->entity_count);
 
-    // print properties
-    for (int pid = 0; pid < entity->property_count; pid++) {
-      char* key = entity->property_keys[pid];
-      char* value = entity->property_values[pid];
-      printf("    \"%s\" : \"%s\"\n", key, value);
+    for (int eid = 0; eid < class->entity_count; eid++) {
+      ptm_entity* entity = &class->entities[eid];
+      total_brushes += entity->brush_count;
     }
   }
 
-  printf("\n%s: %i entities, %i brushes\n", 
-          map_file_name, entity_total, brush_total);
-
+  printf("\nparsed %s, %i total brushes\n", map_file_name, total_brushes);
   ptm_free(&map);
   return 0;
 }

@@ -8,25 +8,7 @@
     create the implementation.
 
     BASIC USAGE:
-      pt_map* map = ptm_load("example.map");
-
-      for (int eid = 0; eid < map->entity_count; eid++) {
-        ptm_entity* entity = &map->entities[eid];
-
-        for (int pid = 0; pid < entity->property_count; pid++) {
-          ptm_property* property = &entity->properties[pid];
-        }
-
-        for (int bid = 0; bid < entity->brush_count; bid++) {
-          ptm_brush* brush = &entity->brushes[bid];
-
-          for (int fid = 0; fid < brush->face_count; fid++) {
-            ptm_face* face = &brush->faces[fid];
-          }
-        }
-      }
-
-      ptm_free(map);
+      See ptm_demo.c for example.
 
     OPTIONS:
       #define PTM_ASSERT(expr)
@@ -87,10 +69,12 @@
       license to copy, modify, publish, and distribute this file 
       as you see fit.
             
-    TODO::
-      make more stuff live
-        in arenas instead of linked lists (or move linked lists
-        into arenas) for better performance, easier freeing
+    TODO:
+      make more stuff live in arenas instead of linked lists 
+      (or move linked lists into arenas) for better performance, easier freeing
+
+      coordinate system conversion (weird Z=up and stuff)
+      (wait for scaling though, b/c float vs int precision for processing)
       
       Merge `func_group` into worldspawn on scope decrease
 
@@ -107,7 +91,6 @@
 
 #ifndef PTM_MAP_H
 #define PTM_MAP_H
-/* === BEGIN HEADER === */
 
 #define PTM_REAL float
 #define PTM_HASH unsigned int
@@ -115,7 +98,6 @@
 typedef struct ptm_brush_face {
   PTM_REAL plane_normal[3];
   PTM_REAL plane_c;
-
   char* texture_name;
   PTM_HASH texture_hash;
   PTM_REAL texture_uv[2][3];
@@ -129,23 +111,25 @@ typedef struct ptm_brush {
 } ptm_brush;
 
 typedef struct ptm_entity {
-  char* class_name;
-  PTM_HASH class_hash;
-
   char** property_keys;
   char** property_values;
   int property_count;
-
   ptm_brush* brushes;
   int brush_count;
 } ptm_entity;
 
-typedef struct ptm_map {
+typedef struct ptm_class {
+  char* name;
+  PTM_HASH hash;
   ptm_entity* entities;
   int entity_count;
+}ptm_entity_class;
 
-  void* _arena;
-  void* _string_arena;
+typedef struct ptm_map {
+  ptm_entity worldspawn;
+  ptm_class* classes;
+  int class_count;
+  void* arena;
 } ptm_map;
 
 #ifndef PTM_NO_STDIO
@@ -204,29 +188,29 @@ PTM_REAL ptm__strtor(const char* start, const char** end) {
 
 #include <stdlib.h>
 
-#define PTM_ARENA_CREATE(size) ptm__arena_create(size)
-#define PTM_ARENA_ALLOC(arena, bytes) ptm__arena_alloc(arena, bytes)
-#define PTM_ARENA_FREE(arena) ptm__arena_free(arena)
+#define PTM_ARENA_CREATE(size) ptm_arena_create(size)
+#define PTM_ARENA_ALLOC(arena, bytes) ptm_arena_alloc(arena, bytes)
+#define PTM_ARENA_FREE(arena) ptm_arena_free(arena)
 
-static void* ptm__arena_create(int size);
-static void* ptm__arena_alloc(void* opaque_arena, int bytes);
-static void ptm__arena_free(void* opaque_arena);
+static void* ptm_arena_create(int size);
+static void* ptm_arena_alloc(void* opaque_arena, int bytes);
+static void ptm_arena_free(void* opaque_arena);
 
-typedef struct ptm__arena_chunk {
-  struct ptm__arena_chunk* next_chunk;
+typedef struct ptm_arena_chunk {
+  struct ptm_arena_chunk* next_chunk;
   void* data;
   int head;
   int size;
-} ptm__arena_chunk;
+} ptm_arena_chunk;
 
-typedef struct ptm__arena {
-  ptm__arena_chunk* chunk_list;
-  ptm__arena_chunk* chunk_head;
-} ptm__arena;
+typedef struct ptm_arena {
+  ptm_arena_chunk* chunk_list;
+  ptm_arena_chunk* chunk_head;
+} ptm_arena;
 
-static ptm__arena_chunk* ptm__arena_create_chunk(int size) {
-  ptm__arena_chunk* chunk;
-  chunk = (ptm__arena_chunk*)malloc(sizeof(ptm__arena_chunk));
+static ptm_arena_chunk* ptm_arena_create_chunk(int size) {
+  ptm_arena_chunk* chunk;
+  chunk = (ptm_arena_chunk*)malloc(sizeof(ptm_arena_chunk));
   chunk->data = malloc(size);
   chunk->head = 0;
   chunk->size = size;
@@ -234,24 +218,24 @@ static ptm__arena_chunk* ptm__arena_create_chunk(int size) {
   return chunk;
 }
 
-static void* ptm__arena_create(int size) {
-  ptm__arena_chunk* initial_chunk;
-  initial_chunk = ptm__arena_create_chunk(size);
+static void* ptm_arena_create(int size) {
+  ptm_arena_chunk* initial_chunk;
+  initial_chunk = ptm_arena_create_chunk(size);
 
-  ptm__arena* arena;
-  arena = (ptm__arena*)malloc(sizeof(ptm__arena));
+  ptm_arena* arena;
+  arena = (ptm_arena*)malloc(sizeof(ptm_arena));
   arena->chunk_list = initial_chunk;
   arena->chunk_head = initial_chunk;
   return arena;
 }
 
-static void* ptm__arena_alloc(void* opaque_arena, int bytes) {
-  ptm__arena* arena = (ptm__arena*)opaque_arena;
-  ptm__arena_chunk* chunk = arena->chunk_head;
+static void* ptm_arena_alloc(void* opaque_arena, int bytes) {
+  ptm_arena* arena = (ptm_arena*)opaque_arena;
+  ptm_arena_chunk* chunk = arena->chunk_head;
   int is_full = chunk->head + bytes > chunk->size;
 
   if (is_full) {
-    chunk = ptm__arena_create_chunk(chunk->size * 2);
+    chunk = ptm_arena_create_chunk(chunk->size * 2);
     arena->chunk_head->next_chunk = chunk;
     arena->chunk_head = chunk;
   }
@@ -261,13 +245,13 @@ static void* ptm__arena_alloc(void* opaque_arena, int bytes) {
   return result;
 }
 
-static void ptm__arena_free(void* opaque_arena) {
-  ptm__arena* arena = (ptm__arena*)opaque_arena;
-  ptm__arena_chunk* chunk = arena->chunk_list;
+static void ptm_arena_free(void* opaque_arena) {
+  ptm_arena* arena = (ptm_arena*)opaque_arena;
+  ptm_arena_chunk* chunk = arena->chunk_list;
 
   while (chunk != NULL) {
     free(chunk->data);
-    ptm__arena_chunk* next_chunk = chunk->next_chunk;
+    ptm_arena_chunk* next_chunk = chunk->next_chunk;
     free(chunk);
     chunk = next_chunk;
   }
@@ -330,21 +314,21 @@ static PTM_REAL ptm__consume_number(const char** head) {
   return value;
 }
 
-typedef struct ptm__string_cache_node {
-  struct ptm__string_cache_node* next;
+typedef struct ptm_string_cache_node {
+  struct ptm_string_cache_node* next;
   char* value;
   PTM_HASH hash;
-}ptm__string_cache_node;
+}ptm_string_cache_node;
 
-typedef struct ptm__string_cache {
-  ptm__string_cache_node* node_list;
-  ptm__string_cache_node* node_head;
+typedef struct ptm_string_cache {
+  ptm_string_cache_node* node_list;
+  ptm_string_cache_node* node_list_head;
   void* node_arena;
   void* value_arena;
-}ptm__string_cache;
+}ptm_string_cache;
 
 static char* ptm__consume_string(const char** head, char value, 
-        ptm__string_cache* cache) 
+        ptm_string_cache* cache) 
 {
   ptm__consume_until_after(head, value);
   const char* start = *head;
@@ -357,7 +341,7 @@ static char* ptm__consume_string(const char** head, char value,
   PTM_HASH hash = PTM_CREATE_HASH(start, length);
 
   // Check for a cache hit and return if so
-  ptm__string_cache_node* node = cache->node_list;
+  ptm_string_cache_node* node = cache->node_list;
 
   while (node != NULL) {
     if (node->hash == hash) {
@@ -367,8 +351,8 @@ static char* ptm__consume_string(const char** head, char value,
   }
 
   // Cache did not contain string: alloc new one
-  node = (ptm__string_cache_node*)
-      PTM_ARENA_ALLOC(cache->node_arena, sizeof(ptm__string_cache_node));
+  node = (ptm_string_cache_node*)
+      PTM_ARENA_ALLOC(cache->node_arena, sizeof(ptm_string_cache_node));
 
   node->next = NULL;
   node->hash = hash;
@@ -377,99 +361,114 @@ static char* ptm__consume_string(const char** head, char value,
   node->value[length] = '\0';
 
   // Update cache linked list with the new string
-  if (cache->node_head != NULL) {
-    cache->node_head->next = node;
-    cache->node_head = node;
+  if (cache->node_list_head != NULL) {
+    cache->node_list_head->next = node;
+    cache->node_list_head = node;
   }
   else {
-    cache->node_head = node;
+    cache->node_list_head = node;
     cache->node_list = node;
   }
 
   return node->value;
 }
 
-typedef enum ptm__line_type {
-  PTMM__LINE_COMMENT,
-  PTMM__LINE_PROPERTY,
-  PTMM__LINE_BRUSH_FACE,
-  PTMM__LINE_SCOPE_START,
-  PTMM__LINE_SCOPE_END,
-  PTMM__LINE_INVALID,
-} ptm__line_type;
+typedef enum ptm_line {
+  PTM_LINE_COMMENT,
+  PTM_LINE_PROPERTY,
+  PTM_LINE_BRUSH_FACE,
+  PTM_LINE_SCOPE_START,
+  PTM_LINE_SCOPE_END,
+  PTM_LINE_INVALID,
+} ptm_line;
 
-static ptm__line_type ptm__identify_line(const char** head) {
+static ptm_line ptm__identify_line(const char** head) {
   switch (**head) {
-    case '/': return PTMM__LINE_COMMENT;
-    case '{': return PTMM__LINE_SCOPE_START;
-    case '}': return PTMM__LINE_SCOPE_END;
-    case '(': return PTMM__LINE_BRUSH_FACE;
-    case '"': return PTMM__LINE_PROPERTY;
-    default:  return PTMM__LINE_INVALID;
+    case '/': return PTM_LINE_COMMENT;
+    case '{': return PTM_LINE_SCOPE_START;
+    case '}': return PTM_LINE_SCOPE_END;
+    case '(': return PTM_LINE_BRUSH_FACE;
+    case '"': return PTM_LINE_PROPERTY;
+    default:  return PTM_LINE_INVALID;
   }
 }
 
-typedef enum ptm__scope_type {
-  PTMM__SCOPE_MAP,
-  PTMM__SCOPE_ENTITY,
-  PTMM__SCOPE_BRUSH,
-} ptm__scope_type;
+typedef enum ptm_scope {
+  PTM_SCOPE_MAP,
+  PTM_SCOPE_ENTITY,
+  PTM_SCOPE_BRUSH,
+} ptm_scope;
 
-typedef struct ptm__property_node {
-  struct ptm__property_node* next;
+#define PTM_LIST_TYPE(name) \
+  typedef struct ptm_ ## name ## _node { struct ptm_ ## name ## _node* next; ptm_ ## name ## * value; }
+  
+#define PTM_LIST(type) \
+  type ## _node* 
+
+typedef struct ptm_property_node {
+  struct ptm_property_node* next;
   char* key;
   char* value;
-}ptm__property_node;
+}ptm_property_node;
 
-typedef struct ptm__brush_face_node {
-  struct ptm__brush_face_node* next;
+typedef struct ptm_brush_face_node {
+  struct ptm_brush_face_node* next;
   ptm_brush_face value;
-}ptm__brush_face_node;
+}ptm_brush_face_node;
 
-typedef struct ptm__brush_node {
-  struct ptm__brush_node* next;
-  ptm__brush_face_node* face_list;
-  ptm__brush_face_node* face_list_head;
+typedef struct ptm_brush_node {
+  struct ptm_brush_node* next;
+  ptm_brush_face_node* face_list;
+  ptm_brush_face_node* face_list_head;
   int face_list_length;
-}ptm__brush_node;
+}ptm_brush_node;
 
-typedef struct ptm__entity_node {
-  struct ptm__entity_node* next;
+typedef struct ptm_entity_node {
+  struct ptm_entity_node* next;
 
-  ptm__brush_node* brush_list;
-  ptm__brush_node* brush_list_head;
+  ptm_brush_node* brush_list;
+  ptm_brush_node* brush_list_head;
   int brush_list_length;
 
-  ptm__property_node* property_list;
-  ptm__property_node* property_list_head;
+  ptm_property_node* property_list;
+  ptm_property_node* property_list_head;
   int property_list_length;
-}ptm__entity_node;
+}ptm_entity_node;
 
 void ptm_load_source(const char* source, int source_length, ptm_map* map) {
   const char* head = source;
   const char* end = source + source_length + 1;
-  ptm__scope_type scope = PTMM__SCOPE_MAP;
 
-  ptm__string_cache cache;
+  void* arena = PTM_ARENA_CREATE(512);
+  void* temp_arena = PTM_ARENA_CREATE(512);
+
+  ptm_string_cache cache;
   cache.node_list = NULL;
-  cache.node_head = NULL;
-  cache.node_arena = PTM_ARENA_CREATE(512);
-  cache.value_arena = PTM_ARENA_CREATE(512);
+  cache.node_list_head = NULL;
+  cache.node_arena = temp_arena;
+  cache.value_arena = arena;
 
-  ptm__entity_node* entity_list = NULL;
-  ptm__entity_node* entity_list_head = NULL;
+  ptm_entity_node* entity_list = NULL;
+  ptm_entity_node* entity_list_head = NULL;
   int entity_list_length = 0;
 
-  ptm__entity_node* scoped_entity = NULL;
-  ptm__brush_node* scoped_brush = NULL;
+  ptm_entity_node scoped_entity = {0};
+  ptm_brush_node scoped_brush = {0};
+  ptm_entity_node world_entity = {0};
 
+  ptm_scope scope = PTM_SCOPE_MAP;
+
+  // TODO: I have a feeling this loop is insecure/has
+  // some overrun potential, given how unpredictably
+  // we move the read head
+  
   while (head < end) {
     // Leading whitespace does not affect the meaning of a line
     ptm__consume_whitespace(&head);
 
     switch (ptm__identify_line(&head)) {
-      case PTMM__LINE_INVALID:
-      case PTMM__LINE_COMMENT: {
+      case PTM_LINE_INVALID:
+      case PTM_LINE_COMMENT: {
         // Don't do anything with a comment or invalid line
         break;
       }
@@ -478,19 +477,19 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
       // child object to the parent (e.g. new brush for an
       // entity, or new entity for a map).
 
-      case PTMM__LINE_SCOPE_START: {
-        PTM_ASSERT(scope != PTMM__SCOPE_BRUSH);
+      case PTM_LINE_SCOPE_START: {
+        PTM_ASSERT(scope != PTM_SCOPE_BRUSH);
 
-        if (scope == PTMM__SCOPE_MAP) {
-          scope = PTMM__SCOPE_ENTITY;
-          int size = sizeof(ptm__entity_node);
-          scoped_entity = (ptm__entity_node*)PTM_MALLOC(size);
+        if (scope == PTM_SCOPE_MAP) {
+          scope = PTM_SCOPE_ENTITY;
+          int size = sizeof(ptm_entity_node);
+          scoped_entity = (ptm_entity_node*)PTM_MALLOC(size);
           ptm__zero_memory(scoped_entity, size);
         }
-        else if (scope == PTMM__SCOPE_ENTITY) {
-          scope = PTMM__SCOPE_BRUSH;
-          int size = sizeof(ptm__brush_node);
-          scoped_brush = (ptm__brush_node*)PTM_MALLOC(size);
+        else if (scope == PTM_SCOPE_ENTITY) {
+          scope = PTM_SCOPE_BRUSH;
+          int size = sizeof(ptm_brush_node);
+          scoped_brush = (ptm_brush_node*)PTM_MALLOC(size);
           ptm__zero_memory(scoped_brush, size);
         }
 
@@ -503,12 +502,12 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
       // func_groups into worldspawn instead of as
       // a normal entity.
 
-      case PTMM__LINE_SCOPE_END: {
-        PTM_ASSERT(scope != PTMM__SCOPE_MAP);
+      case PTM_LINE_SCOPE_END: {
+        PTM_ASSERT(scope != PTM_SCOPE_MAP);
 
-        if (scope == PTMM__SCOPE_ENTITY) {
+        if (scope == PTM_SCOPE_ENTITY) {
           PTM_ASSERT(scoped_entity != NULL);
-          scope = PTMM__SCOPE_MAP;
+          scope = PTM_SCOPE_MAP;
 
           if (entity_list_head != NULL) {
             entity_list_head->next = scoped_entity;
@@ -525,10 +524,10 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
           scoped_entity = NULL;
           // todo: this is where the func_group merging would go
         }
-        else if (scope == PTMM__SCOPE_BRUSH) {
+        else if (scope == PTM_SCOPE_BRUSH) {
           PTM_ASSERT(scoped_entity != NULL);
           PTM_ASSERT(scoped_brush != NULL);
-          scope = PTMM__SCOPE_ENTITY;
+          scope = PTM_SCOPE_ENTITY;
 
           if (scoped_entity->brush_list_head != NULL) {
             scoped_entity->brush_list_head->next = scoped_brush;
@@ -550,8 +549,8 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
       // Properties are the key-value pairs that define
       // gameplay data for the entities.
 
-      case PTMM__LINE_PROPERTY: {
-        PTM_ASSERT(scope == PTMM__SCOPE_ENTITY);
+      case PTM_LINE_PROPERTY: {
+        PTM_ASSERT(scope == PTM_SCOPE_ENTITY);
 
         ptm__consume_whitespace(&head);
         if (*(head + 1) == '_') {
@@ -559,8 +558,8 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
         }
 
         // Add a new property to the scoped entity's list
-        int s = sizeof(ptm__property_node);
-        ptm__property_node* property = (ptm__property_node*)PTM_MALLOC(s);
+        int s = sizeof(ptm_property_node);
+        ptm_property_node* property = (ptm_property_node*)PTM_MALLOC(s);
         property->next = NULL;
 
         if (scoped_entity->property_list_head != NULL) {
@@ -583,13 +582,13 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
       // Brush faces are the complex numeric lines that define
       // every mesh-related and visible property of an entity.
       
-      case PTMM__LINE_BRUSH_FACE: {
-        PTM_ASSERT(scope == PTMM__SCOPE_BRUSH);
+      case PTM_LINE_BRUSH_FACE: {
+        PTM_ASSERT(scope == PTM_SCOPE_BRUSH);
         PTM_ASSERT(scoped_brush != NULL);
 
         // Add a new brush face to the current brush's list
-        int s = sizeof(ptm__brush_face_node);
-        ptm__brush_face_node* face = (ptm__brush_face_node*)PTM_MALLOC(s);
+        int s = sizeof(ptm_brush_face_node);
+        ptm_brush_face_node* face = (ptm_brush_face_node*)PTM_MALLOC(s);
         face->next = NULL;
 
         if (scoped_brush->face_list_head != NULL) {
@@ -690,27 +689,27 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
     // Copy entities
     size = sizeof(ptm_brush) * entity_list->brush_list_length;
     entity->brushes = (ptm_brush*)PTM_ARENA_ALLOC(arena, size);
-    ptm__brush_node* brush_list = entity_list->brush_list;
+    ptm_brush_node* brush_list = entity_list->brush_list;
 
     while (brush_list != NULL) {
       // Copy brushes
       ptm_brush* brush = &entity->brushes[entity->brush_count++];
       size = sizeof(ptm_brush_face) * brush_list->face_list_length;
       brush->faces = (ptm_brush_face*)PTM_ARENA_ALLOC(arena, size);
-      ptm__brush_face_node* face_list = brush_list->face_list;
+      ptm_brush_face_node* face_list = brush_list->face_list;
 
       while (face_list != NULL) {
         // Copy faces
         brush->faces[brush->face_count++] = face_list->value;
 
         // Free old faces
-        ptm__brush_face_node* next_face = face_list->next;
+        ptm_brush_face_node* next_face = face_list->next;
         PTM_FREE(face_list);
         face_list = next_face;
       }
 
       // Free old brushes
-      ptm__brush_node* next_brush = brush_list->next;
+      ptm_brush_node* next_brush = brush_list->next;
       PTM_FREE(brush_list);
       brush_list = next_brush;
     }
@@ -719,7 +718,7 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
     size = sizeof(char*) * entity_list->property_list_length;
     entity->property_keys = (char**)PTM_ARENA_ALLOC(arena, size);
     entity->property_values = (char**)PTM_ARENA_ALLOC(arena, size);
-    ptm__property_node* property_list = entity_list->property_list;
+    ptm_property_node* property_list = entity_list->property_list;
 
     while (property_list != NULL) {
       entity->property_keys[entity->property_count] = property_list->key;
@@ -727,13 +726,13 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
       entity->property_count++;
 
       // Free old properties
-      ptm__property_node* next_property = property_list->next;
+      ptm_property_node* next_property = property_list->next;
       PTM_FREE(property_list);
       property_list = next_property;
     }
 
     // Free old entities
-    ptm__entity_node* next_entity = entity_list->next;
+    ptm_entity_node* next_entity = entity_list->next;
     PTM_FREE(entity_list);
     entity_list = next_entity;
   }
@@ -744,13 +743,11 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
   // populate final structure
   map->entities = entities;
   map->entity_count = entity_count;
-  map->_arena = arena;
-  map->_string_arena = cache.value_arena;
+  map->arena = arena;
 }
 
 void ptm_free(ptm_map* map) {
-  PTM_ARENA_FREE(map->_arena);
-  PTM_ARENA_FREE(map->_string_arena);
+  PTM_ARENA_FREE(map->arena);
 }
 
 #ifndef PTM_NO_STDIO
