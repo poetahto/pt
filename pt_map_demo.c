@@ -1,7 +1,7 @@
 #include "pt_map.h"
 #include <stdio.h>
 
-static void print_map_info(const char* name, ptb_map* map);
+static void print_map_info(const char* name, ptm_map* map);
 
 int main(int argc, char** argv) {
   if (argc < 2) {
@@ -10,13 +10,13 @@ int main(int argc, char** argv) {
   }
 
   const char* map_name = argv[1];
-  pt_map* map = ptm_load(map_name);
+  ptm_map* map = ptm_load(map_name);
   print_map_info(map_name, map);
   ptm_free(map);
   return 0;
 }
 
-static void print_map_info(const char* name, pt_map* map) {
+static void print_map_info(const char* name, ptm_map* map) {
   // print general info
   printf("%s (%i entities)\n", name, map->entity_count);
 
