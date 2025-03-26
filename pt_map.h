@@ -115,11 +115,12 @@
 typedef struct ptm_brush_face {
   PTM_REAL plane_normal[3];
   PTM_REAL plane_c;
-  const char* texture_name;
+
+  char* texture_name;
+  PTM_HASH texture_hash;
   PTM_REAL texture_uv[2][3];
   PTM_REAL texture_offset[2];
   PTM_REAL texture_scale[2];
-  PTM_REAL texture_rotation;
 } ptm_brush_face;
 
 typedef struct ptm_brush {
@@ -128,9 +129,13 @@ typedef struct ptm_brush {
 } ptm_brush;
 
 typedef struct ptm_entity {
+  char* class_name;
+  PTM_HASH class_hash;
+
   char** property_keys;
   char** property_values;
   int property_count;
+
   ptm_brush* brushes;
   int brush_count;
 } ptm_entity;
@@ -598,10 +603,7 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
 
         scoped_brush->face_list_length++;
 
-        // The line has the following format:
-        // (x1 y1 z1) (x2 y2 z2) (x3 y3 z3) TEXTURE_NAME rotation scaleX scaleY
-    
-        // We store the data from it into this face struct.
+        // Begin extracting face data from the line
         ptm_brush_face* f = &face->value;
 
         // First, we parse the 3 triangle points that comprise our plane.
@@ -635,8 +637,12 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
           ptm__consume_until_after(&head, ']');
         }
 
+        // The rotation value is actually unused in valve220,
+        // so we totally ignore and skip it.
+        ptm__consume_whitespace(&head);
+        ptm__consume_until_at(&head, ' ');
+
         // Finally, some closing texture info
-        f->texture_rotation = ptm__consume_number(&head);
         f->texture_scale[0] = ptm__consume_number(&head);
         f->texture_scale[1] = ptm__consume_number(&head);
         break;
