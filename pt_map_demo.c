@@ -22,14 +22,14 @@ int main(int argc, char** argv) {
   const char* map_file_name = argv[1];
   ptm_map* map = ptm_load(map_file_name);
   
-  int brush_count = 0;
-  int entity_class_count = 0;
-  int entity_count = 0;
+  int total_brush_count = 0;
+  int total_entity_class_count = 0;
+  int total_entity_count = 0;
 
   // print world info
   int world_brush_count = count_brushes(map->world_brushes);
-  printf("WORLDSPAWN: %i brushes\n", world_brush_count);
-  brush_count += world_brush_count;
+  printf("worldspawn: %i brushes\n", world_brush_count);
+  total_brush_count += world_brush_count;
   ptm_property* world_property = map->world_properties;
 
   while (world_property != NULL) {
@@ -42,19 +42,21 @@ int main(int argc, char** argv) {
 
   while (entity_class != NULL) {
     ptm_entity* entity = entity_class->entities;
+    int entity_count = 0;
 
     while (entity != NULL) {
-      brush_count += count_brushes(entity->brushes);
+      total_brush_count += count_brushes(entity->brushes);
       entity_count++;
       entity = entity->next;
     }
 
     printf("%s: %i entities\n", entity_class->name.data, entity_count);
-    entity_class_count++;
+    total_entity_count += entity_count;
+    total_entity_class_count++;
     entity_class = entity_class->next;
   }
 
-  printf("\n%s: %i brushes, %i classes, %i entities\n", map_file_name, brush_count, entity_class_count, entity_count);
+  printf("\n%s: %i brushes, %i classes, %i entities\n", map_file_name, total_brush_count, total_entity_class_count, total_entity_count);
   ptm_free(map);
   return 0;
 }

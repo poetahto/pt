@@ -1,3 +1,4 @@
+#include <stdio.h>
 /* 
     ptm_map - v0.01 - public domain `.map` loader
                             No warranty implied; use at your own risk
@@ -70,9 +71,6 @@
       as you see fit.
             
     TODO:
-      coordinate system conversion (weird Z=up and stuff)
-      (wait for scaling though, b/c float vs int precision for processing)
-      
       Feature parity with that cool really old repository
         (CSG union, meshing, texture uv calculation)
 
@@ -382,6 +380,7 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
         else if (scope == PTM_SCOPE_ENTITY) {
           scope = PTM_SCOPE_BRUSH;
           scoped_brush = (ptm_brush*)PTM_APUSH(arena, sizeof(ptm_brush));
+          scoped_brush->next = NULL;
           scoped_brush->faces = NULL;
         }
 
@@ -405,7 +404,13 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
           
           // Merge special entity brushes into the singleton "world" entity
           if (is_world_entity && scoped_entity->brushes != NULL) {
-            scoped_entity->brushes->next = map->world_brushes;
+            ptm_brush* brush = scoped_entity->brushes;
+
+            while (brush->next != NULL) {
+              brush = brush->next;
+            }
+
+            brush->next = map->world_brushes;
             map->world_brushes = scoped_entity->brushes;
           }
 
@@ -496,9 +501,10 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
 
         for (int i = 0; i < 3; i++) {
           ptm__consume_until_after(&head, '(');
+          // Quake uses z=up, and we probably want y=up so swizzle here
           p[i][0] = ptm__consume_number(&head);
-          p[i][1] = ptm__consume_number(&head);
           p[i][2] = ptm__consume_number(&head);
+          p[i][1] = ptm__consume_number(&head);
           ptm__consume_until_after(&head, ')');
         }
 
