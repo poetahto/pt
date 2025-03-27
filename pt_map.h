@@ -95,11 +95,20 @@
 #define PTM_REAL float
 #define PTM_HASH unsigned int
 
+typedef struct ptm_string {
+  char* value;
+  PTM_HASH hash;
+} ptm_string;
+
+typedef struct ptm_texture {
+  void* data;
+  PTM_HASH hash;
+} ptm_texture;
+
 typedef struct ptm_brush_face {
   PTM_REAL plane_normal[3];
   PTM_REAL plane_c;
-  char* texture_name;
-  PTM_HASH texture_hash;
+  ptm_string texture_name;
   PTM_REAL texture_uv[2][3];
   PTM_REAL texture_offset[2];
   PTM_REAL texture_scale[2];
@@ -110,26 +119,26 @@ typedef struct ptm_brush {
   int face_count;
 } ptm_brush;
 
+typedef struct ptm_property {
+  ptm_string key;
+  ptm_string value;
+} ptm_property;
+
 typedef struct ptm_entity {
-  char** property_keys;
-  char** property_values;
-  int property_count;
-  ptm_brush* brushes;
-  int brush_count;
+  PTM_LIST(property);
+  PTM_LIST(brush);
 } ptm_entity;
 
 typedef struct ptm_class {
-  char* name;
-  PTM_HASH hash;
+  ptm_string name;
   ptm_entity* entities;
   int entity_count;
-}ptm_entity_class;
+} ptm_entity_class;
 
 typedef struct ptm_map {
-  ptm_entity worldspawn;
   ptm_class* classes;
   int class_count;
-  void* arena;
+  ptm_entity world;
 } ptm_map;
 
 #ifndef PTM_NO_STDIO
@@ -153,6 +162,57 @@ void ptm_free(ptm_map* map);
 #define PTM_ASSERT(expr) assert(expr)
 #endif
 
+#ifndef PTM_APUSH
+#define PTM_ACREATE(capacity) ptm__arena_create(capacity)
+#define PTM_APUSH(arena, bytes) ptm__arena_push(arena, bytes)
+#define PTM_AFREE(arena) ptm__arena_free(arena)
+
+#include <stdlib.h>
+
+typedef struct ptm_arena {
+  char* data;
+  int head;
+  int capacity;
+} ptm_arena;
+
+static void* ptm__arena_create(int capacity) {
+  ptm_arena* arena = (ptm_arena*)malloc(sizeof *arena);
+  arena->data = (char*)malloc(capacity);
+  arena->capacity = capacity;
+  arena->head = 0;
+  return arena;
+}
+
+static void* ptm__arena_push(void* opaque_arena, int bytes) {
+  ptm_arena* arena = (ptm_arena*)opaque_arena;
+  PTM_ASSERT(arena->head + bytes <= arena->capacity);
+  void* result = arena->data + arena->head;
+  arena->head += bytes;
+  return result;
+}
+
+static void ptm__arena_free(void* opaque_arena) {
+  ptm_arena* arena = (ptm_arena*)opaque_arena;
+  free(arena->data);
+  free(arena);
+}
+
+#endif
+
+#ifndef PTM_STRTOR
+#include <stdlib.h>
+#define PTM_STRTOR(start, end) ptm__strtor(start, end)
+PTM_REAL ptm__strtor(const char* start, const char** end) {
+  #if PTM_REAL == double
+    return strtod(start, (char**)end);
+  #elif PTM_REAL == float
+    return strtof(start, (char**)end);
+  #else
+    #error Value of PTM_REAL has no default implementation.
+  #endif
+}
+#endif
+
 #ifndef PTM_CREATE_HASH
 #define PTM_CREATE_HASH(data, size) ptm__create_hash_fnv32(data, size)
 PTM_HASH ptm__create_hash_fnv32(const char* data, int size) {
@@ -167,98 +227,35 @@ PTM_HASH ptm__create_hash_fnv32(const char* data, int size) {
 }
 #endif 
 
-#ifndef PTM_STRTOR
-#include <stdlib.h>
-#define PTM_STRTOR(start, end) ptm__strtor(start, end)
-PTM_REAL ptm__strtor(const char* start, const char** end) {
-#if PTM_REAL == double
-  return strtod(start, (char**)end);
-#elif PTM_REAL == float
-  return strtof(start, (char**)end);
-#else
-  #error Value of PTM_REAL has no default implementation.
-#endif
-}
-#endif
-
-#ifndef PTM_ARENA_CREATE
-
-// Default arena implementation, uses malloc/free and dynamically grows
-// in chunks when reaching max capacity.
-
-#include <stdlib.h>
-
-#define PTM_ARENA_CREATE(size) ptm_arena_create(size)
-#define PTM_ARENA_ALLOC(arena, bytes) ptm_arena_alloc(arena, bytes)
-#define PTM_ARENA_FREE(arena) ptm_arena_free(arena)
-
-static void* ptm_arena_create(int size);
-static void* ptm_arena_alloc(void* opaque_arena, int bytes);
-static void ptm_arena_free(void* opaque_arena);
-
-typedef struct ptm_arena_chunk {
-  struct ptm_arena_chunk* next_chunk;
-  void* data;
-  int head;
-  int size;
-} ptm_arena_chunk;
-
-typedef struct ptm_arena {
-  ptm_arena_chunk* chunk_list;
-  ptm_arena_chunk* chunk_head;
-} ptm_arena;
-
-static ptm_arena_chunk* ptm_arena_create_chunk(int size) {
-  ptm_arena_chunk* chunk;
-  chunk = (ptm_arena_chunk*)malloc(sizeof(ptm_arena_chunk));
-  chunk->data = malloc(size);
-  chunk->head = 0;
-  chunk->size = size;
-  chunk->next_chunk = NULL; 
-  return chunk;
-}
-
-static void* ptm_arena_create(int size) {
-  ptm_arena_chunk* initial_chunk;
-  initial_chunk = ptm_arena_create_chunk(size);
-
-  ptm_arena* arena;
-  arena = (ptm_arena*)malloc(sizeof(ptm_arena));
-  arena->chunk_list = initial_chunk;
-  arena->chunk_head = initial_chunk;
-  return arena;
-}
-
-static void* ptm_arena_alloc(void* opaque_arena, int bytes) {
-  ptm_arena* arena = (ptm_arena*)opaque_arena;
-  ptm_arena_chunk* chunk = arena->chunk_head;
-  int is_full = chunk->head + bytes > chunk->size;
-
-  if (is_full) {
-    chunk = ptm_arena_create_chunk(chunk->size * 2);
-    arena->chunk_head->next_chunk = chunk;
-    arena->chunk_head = chunk;
+// Autogen boilerplate linked-list code
+#define PTM_DECLARE_LIST(name)                                                  \
+  typedef struct ptm_##name##_node {                                            \
+    struct ptm_##name##_##node* next;                                           \
+    ptm_##name## content;                                                       \
+  };                                                                            \
+                                                                                \
+  typedef struct ptm_##name##_list {                                            \
+    ptm_##name##_node* data;                                                    \
+    ptm_##name##_node* head;                                                    \
+    int count;                                                                  \
+  };                                                                            \
+                                                                                \
+  ptm_##name##_node* ptm__push_##name##(ptm_##name##_list* list, void* arena) { \
+    ptm_##name##_node* node;                                                    \
+    node = (ptm_##name##_node*)PTM_APUSH(arena, sizeof *node);                  \
+    *node = {0};                                                                \
+                                                                                \
+    if (list-count > 0) {                                                       \
+      list->head->next = node;                                                  \
+      list->head = node;                                                        \
+    else {                                                                      \
+      list->head = node;                                                        \
+      list->data = node;                                                        \
+    }                                                                           \
+                                                                                \
+    list->count++;                                                              \
+    return node;                                                                \
   }
-
-  void* result = ((char*)chunk->data) + chunk->head;
-  chunk->head += bytes;
-  return result;
-}
-
-static void ptm_arena_free(void* opaque_arena) {
-  ptm_arena* arena = (ptm_arena*)opaque_arena;
-  ptm_arena_chunk* chunk = arena->chunk_list;
-
-  while (chunk != NULL) {
-    free(chunk->data);
-    ptm_arena_chunk* next_chunk = chunk->next_chunk;
-    free(chunk);
-    chunk = next_chunk;
-  }
-
-  free(arena);
-}
-#endif // default arena implementation
 
 static void ptm__subtract_vec3(const float* a, const float* b, float* r) {
   r[0] = a[0] - b[0];
@@ -312,65 +309,49 @@ static PTM_REAL ptm__consume_number(const char** head) {
   PTM_REAL value = PTM_STRTOR(start, &end);
   *head = end;
   return value;
-}
+} 
 
-typedef struct ptm_string_cache_node {
-  struct ptm_string_cache_node* next;
-  char* value;
-  PTM_HASH hash;
-}ptm_string_cache_node;
+PTM_DECLARE_LIST(string)
 
 typedef struct ptm_string_cache {
-  ptm_string_cache_node* node_list;
-  ptm_string_cache_node* node_list_head;
+  ptm_string_list list; 
+  void* string_arena;
   void* node_arena;
-  void* value_arena;
-}ptm_string_cache;
+} ptm_string_cache;
 
-static char* ptm__consume_string(const char** head, char value, 
-        ptm_string_cache* cache) 
+static ptm_string ptm__consume_string(const char** head, char delimiter, ptm_string_cache* cache) 
 {
-  ptm__consume_until_after(head, value);
+  // Parse a string between delimiters at head
+  ptm__consume_until_after(head, delimiter);
   const char* start = *head;
-  ptm__consume_until_at(head, value);
+  ptm__consume_until_at(head, delimiter);
   const char* end = *head;
   (*head)++;
+  int length = (intptr_t)end - (intptr_t)start;
+  PTM_HASH hash = PTM_CREATE_HASH(string, length);
 
-  ptrdiff_t length = (intptr_t)end - (intptr_t)start;
 
-  PTM_HASH hash = PTM_CREATE_HASH(start, length);
-
-  // Check for a cache hit and return if so
-  ptm_string_cache_node* node = cache->node_list;
+  // Check for a cache hit as an early-out
+  ptm_string_node* node = cache->list.data;
 
   while (node != NULL) {
-    if (node->hash == hash) {
-      return node->value;
+    if (node->content.hash == hash) {
+      return node->content;
+      break;
     }
     node = node->next;
   }
 
-  // Cache did not contain string: alloc new one
-  node = (ptm_string_cache_node*)
-      PTM_ARENA_ALLOC(cache->node_arena, sizeof(ptm_string_cache_node));
+  // Allocate new string from parsed value
+  char* value = (char*)PTM_APUSH(cache->string_arena, length + 1);
+  ptm__copy_memory(value, start, length);
+  value[length] = '\0';
 
-  node->next = NULL;
-  node->hash = hash;
-  node->value = (char*)PTM_ARENA_ALLOC(cache->value_arena, length + 1);
-  ptm__copy_memory(node->value, start, length);
-  node->value[length] = '\0';
-
-  // Update cache linked list with the new string
-  if (cache->node_list_head != NULL) {
-    cache->node_list_head->next = node;
-    cache->node_list_head = node;
-  }
-  else {
-    cache->node_list_head = node;
-    cache->node_list = node;
-  }
-
-  return node->value;
+  // Add new string to cache
+  ptm_string_node* new_node = ptm__push_string(&cache->list, cache->node_arena);
+  new_node->content.hash = hash;
+  new_node->content.value = value;
+  return new_node->content;
 }
 
 typedef enum ptm_line {
@@ -399,64 +380,18 @@ typedef enum ptm_scope {
   PTM_SCOPE_BRUSH,
 } ptm_scope;
 
-#define PTM_LIST_TYPE(name) \
-  typedef struct ptm_ ## name ## _node { struct ptm_ ## name ## _node* next; ptm_ ## name ## * value; }
-  
-#define PTM_LIST(type) \
-  type ## _node* 
-
-typedef struct ptm_property_node {
-  struct ptm_property_node* next;
-  char* key;
-  char* value;
-}ptm_property_node;
-
-typedef struct ptm_brush_face_node {
-  struct ptm_brush_face_node* next;
-  ptm_brush_face value;
-}ptm_brush_face_node;
-
-typedef struct ptm_brush_node {
-  struct ptm_brush_node* next;
-  ptm_brush_face_node* face_list;
-  ptm_brush_face_node* face_list_head;
-  int face_list_length;
-}ptm_brush_node;
-
-typedef struct ptm_entity_node {
-  struct ptm_entity_node* next;
-
-  ptm_brush_node* brush_list;
-  ptm_brush_node* brush_list_head;
-  int brush_list_length;
-
-  ptm_property_node* property_list;
-  ptm_property_node* property_list_head;
-  int property_list_length;
-}ptm_entity_node;
-
 void ptm_load_source(const char* source, int source_length, ptm_map* map) {
   const char* head = source;
   const char* end = source + source_length + 1;
 
-  void* arena = PTM_ARENA_CREATE(512);
-  void* temp_arena = PTM_ARENA_CREATE(512);
+  PTM_HASH class_key_hash = PTM_CREATE_HASH("classname");
+  PTM_HASH world_class_hash = PTM_CREATE_HASH("worldspawn");
+  PTM_HASH group_class_hash = PTM_CREATE_HASH("func_group");
 
-  ptm_string_cache cache;
-  cache.node_list = NULL;
-  cache.node_list_head = NULL;
-  cache.node_arena = temp_arena;
-  cache.value_arena = arena;
-
-  ptm_entity_node* entity_list = NULL;
-  ptm_entity_node* entity_list_head = NULL;
-  int entity_list_length = 0;
-
-  ptm_entity_node scoped_entity = {0};
-  ptm_brush_node scoped_brush = {0};
-  ptm_entity_node world_entity = {0};
-
+  ptm_string_cache string_cache = {0};
   ptm_scope scope = PTM_SCOPE_MAP;
+  ptm_entity scoped_entity;
+  ptm_brush scoped_brush;
 
   // TODO: I have a feeling this loop is insecure/has
   // some overrun potential, given how unpredictably
@@ -482,15 +417,11 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
 
         if (scope == PTM_SCOPE_MAP) {
           scope = PTM_SCOPE_ENTITY;
-          int size = sizeof(ptm_entity_node);
-          scoped_entity = (ptm_entity_node*)PTM_MALLOC(size);
-          ptm__zero_memory(scoped_entity, size);
+	  scoped_entity = {0};
         }
         else if (scope == PTM_SCOPE_ENTITY) {
           scope = PTM_SCOPE_BRUSH;
-          int size = sizeof(ptm_brush_node);
-          scoped_brush = (ptm_brush_node*)PTM_MALLOC(size);
-          ptm__zero_memory(scoped_brush, size);
+	  scoped_brush = {0};
         }
 
         break;
@@ -509,39 +440,55 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
           PTM_ASSERT(scoped_entity != NULL);
           scope = PTM_SCOPE_MAP;
 
-          if (entity_list_head != NULL) {
-            entity_list_head->next = scoped_entity;
-            entity_list_head = scoped_entity;
-          }
-          else {
-            // This is the first entity that is added:
-            // initialize the linked list and its head
-            entity_list_head = scoped_entity;
-            entity_list = scoped_entity;
-          }
+	  // Find the class name for the scoped entity
+	  ptm_string class_name = {0};
 
-          entity_list_length++;
-          scoped_entity = NULL;
-          // todo: this is where the func_group merging would go
+	  for (int i = 0; i < scoped_entity.property_count; i++) {
+	    ptm_property* property = scoped_entity.properties[i];
+
+ 	    if (property->key.hash = class_key_hash) {
+	      class_name = property->value;
+	    }
+	  }
+
+	  PTM_ASSERT(class_name.value != NULL && 
+			  "All entities must have a classname property");
+
+	  bool is_world = class_name.hash == world_class_hash;
+	  bool is_group = class_name.hash == group_class_hash;
+
+          // worldspawn and func_groups are combined into one entity
+	  if (is_world || is_group) {
+	    PTM_LIST_COPY(scoped_entity.property, map->world.property);
+	    PTM_LIST_COPY(scoped_entity.brush, map->world.brush);
+	  }
+	  else {
+	    ptm_class* entity_class = NULL;
+  
+	    // Try and find an existing class that matches
+	    for (int i = 0; i < map->class_count; i++) {
+	      if (map->classes[i].name.hash == class_name.hash) {
+	        entity_class = &map->classes[i];
+	      }
+	    }
+  
+	    // Create a new class if one doesn't exist
+	    if (entity_class == NULL) {
+	      ptm_class new_class = {0};
+	      new_class.name = entity_class;
+	      PTM_LIST_APPEND(map->class, new_class);
+	      entity_class = &map->class_list[map->class_count - 1];
+	    }
+
+	    // Add our scoped entity to the class
+	    PTM_LIST_APPEND(entity_class->entity, scoped_entity);
+	  }
         }
         else if (scope == PTM_SCOPE_BRUSH) {
           PTM_ASSERT(scoped_entity != NULL);
           PTM_ASSERT(scoped_brush != NULL);
           scope = PTM_SCOPE_ENTITY;
-
-          if (scoped_entity->brush_list_head != NULL) {
-            scoped_entity->brush_list_head->next = scoped_brush;
-            scoped_entity->brush_list_head = scoped_brush;
-          }
-          else {
-            // This is the first brush added to the scoped
-            // entity: initialize the linked list and its head.
-            scoped_entity->brush_list_head = scoped_brush;
-            scoped_entity->brush_list = scoped_brush;
-          }
-
-          scoped_entity->brush_list_length++;
-          scoped_brush = NULL;
+	  PTM_LIST_APPEND(scoped_entity.brush, scoped_brush);
         }
         break;
       }
@@ -553,29 +500,18 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
         PTM_ASSERT(scope == PTM_SCOPE_ENTITY);
 
         ptm__consume_whitespace(&head);
-        if (*(head + 1) == '_') {
+
+	// Ignore any names with the prefix "_tb"
+	// (These are used internally by trenchbroom)
+        if (*(head + 1) == '_' && *(head + 2) == 't' && *(head + 3) == 'b') {
           break;
         }
 
         // Add a new property to the scoped entity's list
-        int s = sizeof(ptm_property_node);
-        ptm_property_node* property = (ptm_property_node*)PTM_MALLOC(s);
-        property->next = NULL;
-
-        if (scoped_entity->property_list_head != NULL) {
-          scoped_entity->property_list_head->next = property;
-          scoped_entity->property_list_head = property;
-        }
-        else {
-          scoped_entity->property_list_head = property;
-          scoped_entity->property_list = property;
-        }
-
-        scoped_entity->property_list_length++;
-        
-        // Read the key-value pair of strings into the new property
-        property->key = ptm__consume_string(&head, '\"', &cache);
-        property->value = ptm__consume_string(&head, '\"', &cache);
+	ptm_property property;
+        ptm__consume_string(&head, '"', &property->key, &cache);
+        ptm__consume_string(&head, '"', &property->value, &cache);
+	PTM_LIST_APPEND(scoped_entity.property, property);
         break;
       }
 
@@ -587,23 +523,7 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
         PTM_ASSERT(scoped_brush != NULL);
 
         // Add a new brush face to the current brush's list
-        int s = sizeof(ptm_brush_face_node);
-        ptm_brush_face_node* face = (ptm_brush_face_node*)PTM_MALLOC(s);
-        face->next = NULL;
-
-        if (scoped_brush->face_list_head != NULL) {
-          scoped_brush->face_list_head->next = face;
-          scoped_brush->face_list_head = face;
-        }
-        else {
-          scoped_brush->face_list_head = face;
-          scoped_brush->face_list = face;
-        }
-
-        scoped_brush->face_list_length++;
-
-        // Begin extracting face data from the line
-        ptm_brush_face* f = &face->value;
+	ptm_brush_face face;
 
         // First, we parse the 3 triangle points that comprise our plane.
         PTM_REAL p[3][3];
@@ -620,19 +540,23 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
         float v[2][3];
         ptm__subtract_vec3(p[0], p[1], v[0]);
         ptm__subtract_vec3(p[0], p[2], v[1]);
-        ptm__cross_vec3(v[0], v[1], f->plane_normal);
-        f->plane_c = ptm__dot_vec3(f->plane_normal, p[0]);
+        ptm__cross_vec3(v[0], v[1], face->plane_normal);
+        face->plane_c = ptm__dot_vec3(face->plane_normal, p[0]);
 
         // Now, read the texture string name
-        f->texture_name = ptm__consume_string(&head, ' ', &cache);
+	ptm_string texture_name;
+
+        if (ptm__consume_string(&head, ' ', &texture_name, &cache)) {
+	  
+	}
 
         // Next, 2 blocks of uv information.
         for (int i = 0; i < 2; i++) {
           ptm__consume_until_after(&head, '[');
-          f->texture_uv[i][0] = ptm__consume_number(&head);
-          f->texture_uv[i][1] = ptm__consume_number(&head);
-          f->texture_uv[i][2] = ptm__consume_number(&head);
-          f->texture_offset[i] = ptm__consume_number(&head);
+          face->texture_uv[i][0] = ptm__consume_number(&head);
+          face->texture_uv[i][1] = ptm__consume_number(&head);
+          face->texture_uv[i][2] = ptm__consume_number(&head);
+          face->texture_offset[i] = ptm__consume_number(&head);
           ptm__consume_until_after(&head, ']');
         }
 
@@ -642,8 +566,11 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
         ptm__consume_until_at(&head, ' ');
 
         // Finally, some closing texture info
-        f->texture_scale[0] = ptm__consume_number(&head);
-        f->texture_scale[1] = ptm__consume_number(&head);
+        face->texture_scale[0] = ptm__consume_number(&head);
+        face->texture_scale[1] = ptm__consume_number(&head);
+
+	// Add to current brush
+	PTM_LIST_APPEND(scoped_brush.brush_face, face);
         break;
       }
     } 
