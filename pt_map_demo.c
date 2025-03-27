@@ -27,10 +27,10 @@ int main(int argc, char** argv) {
   int entity_count = 0;
 
   // print world info
-  int world_brush_count = count_brushes(map.world_brushes);
+  int world_brush_count = count_brushes(map->world_brushes);
   printf("WORLDSPAWN: %i brushes\n", world_brush_count);
   brush_count += world_brush_count;
-  ptm_property* world_property = map.world_properties;
+  ptm_property* world_property = map->world_properties;
 
   while (world_property != NULL) {
     printf("  \"%s\" \"%s\"\n", world_property->key.data, world_property->value.data);
@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
   }
 
   // print entity info
-  ptm_entity_class* entity_class = map.entity_classes;
+  ptm_entity_class* entity_class = map->entity_classes;
 
   while (entity_class != NULL) {
     ptm_entity* entity = entity_class->entities;

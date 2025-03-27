@@ -130,7 +130,7 @@ typedef struct ptm_entity_class {
 } ptm_entity_class;
 
 typedef struct ptm_map {
-  ptm_entity_class* groups;
+  ptm_entity_class* entity_classes;
   ptm_property* world_properties;
   ptm_brush* world_brushes;
   void* arena;
@@ -278,7 +278,7 @@ static ptm_string ptm__consume_string(const char** head, char delimiter, ptm_cac
   const char* end = *head;
   (*head)++;
   int length = (intptr_t)end - (intptr_t)start;
-  PTM_HASH hash = PTM_CREATE_HASH(string, length);
+  PTM_HASH hash = PTM_CREATE_HASH(start, length);
 
   // Check for a cache hit as an early-out
   ptm_cached_string* string = *cache;
@@ -286,7 +286,6 @@ static ptm_string ptm__consume_string(const char** head, char delimiter, ptm_cac
   while (string != NULL) {
     if (string->content.hash == hash) {
       return string->content;
-      break;
     }
     string = string->next;
   }
@@ -303,7 +302,7 @@ static ptm_string ptm__consume_string(const char** head, char delimiter, ptm_cac
   new_string->next = *cache;
   *cache = new_string;
 
-  return new_node->content;
+  return new_string->content;
 }
 
 typedef enum ptm_line {
@@ -334,14 +333,16 @@ typedef enum ptm_scope {
 
 ptm_map* ptm_load_source(const char* source, int source_length) {
   // Cache some hashed strings that we frequently evaluate
-  PTM_HASH hash_classname = PTM_CREATE_HASH("classname");
-  PTM_HASH hash_worldspawn = PTM_CREATE_HASH("worldspawn");
-  PTM_HASH hash_func_group = PTM_CREATE_HASH("func_group");
+  PTM_HASH hash_classname = PTM_CREATE_HASH("classname", 9);
+  PTM_HASH hash_worldspawn = PTM_CREATE_HASH("worldspawn", 10);
+  PTM_HASH hash_func_group = PTM_CREATE_HASH("func_group", 10);
 
   // Initialize the map structure that will be returned
-  void* arena = PTM_ACREATE(source_length);
+  void* arena = PTM_ACREATE(source_length * 2);
   ptm_map* map = (ptm_map*)PTM_APUSH(arena, sizeof *map);
-  *map = {0};
+  map->world_properties = NULL;
+  map->world_brushes = NULL;
+  map->entity_classes = NULL;
   map->arena = arena;
 
   // Initialize state that isn't returned, but helps a lot while parsing
@@ -373,11 +374,15 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
         // allocate some memory in the arena.
         if (scope == PTM_SCOPE_MAP) {
           scope = PTM_SCOPE_ENTITY;
-          scoped_entity = (ptm_entity*)PTM_APUSH(arena, sizeof ptm_entity);
+          scoped_entity = (ptm_entity*)PTM_APUSH(arena, sizeof(ptm_entity));
+          scoped_entity->next = NULL;
+          scoped_entity->brushes = NULL;
+          scoped_entity->properties = NULL;
         }
         else if (scope == PTM_SCOPE_ENTITY) {
           scope = PTM_SCOPE_BRUSH;
-          scoped_brush = (ptm_brush*)PTM_APUSH(arena, sizeof ptm_brush);
+          scoped_brush = (ptm_brush*)PTM_APUSH(arena, sizeof(ptm_brush));
+          scoped_brush->faces = NULL;
         }
 
         break;
@@ -399,7 +404,7 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
           int is_world_entity = is_func_group | is_worldspawn;
           
           // Merge special entity brushes into the singleton "world" entity
-          if (is_world_entity) {
+          if (is_world_entity && scoped_entity->brushes != NULL) {
             scoped_entity->brushes->next = map->world_brushes;
             map->world_brushes = scoped_entity->brushes;
           }
@@ -423,9 +428,9 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
             // Create a new class if one doesn't exist
             if (entity_class == NULL) {
               entity_class = (ptm_entity_class*)PTM_APUSH(arena, sizeof *entity_class);
-              entity_class.name = class_name;
-              entity_class.next = map->entity_classes;
-              entity_class.entities = NULL;
+              entity_class->name = class_name;
+              entity_class->next = map->entity_classes;
+              entity_class->entities = NULL;
               map->entity_classes = entity_class;
             }
 
@@ -460,13 +465,13 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
 
         // Add a new property to the scoped entity's list
         ptm_property* property = PTM_APUSH(arena, sizeof *property);
-        ptm__consume_string(&head, '"', &property->key, &cache);
-        ptm__consume_string(&head, '"', &property->value, &cache);
+        property->key = ptm__consume_string(&head, '"', &string_cache, arena);
+        property->value = ptm__consume_string(&head, '"', &string_cache, arena);
 
         // The "classname" property is special: it is stored separately
         // because it *must* be defined for every entity.
         if (property->key.hash == hash_classname) {
-          scoped_entity->class_name = property.value;
+          scoped_entity->class_name = property->value;
         }
         else {
           // Non-classname properties get added to the scoped entity's list
@@ -505,7 +510,7 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
         face->plane_c = ptm__dot_vec3(face->plane_normal, p[0]);
 
         // Now, read the texture string name
-        ptm__consume_string(&head, ' ', &face->texture_name, &cache);
+        face->texture_name = ptm__consume_string(&head, ' ', &string_cache, arena);
 
         // Next, 2 blocks of uv information.
         for (int i = 0; i < 2; i++) {
@@ -554,7 +559,7 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
 }
 
 void ptm_free(ptm_map* map) {
-  PTM_ARENA_FREE(map->arena);
+  PTM_AFREE(map->arena);
 }
 
 #ifndef PTM_NO_STDIO
@@ -571,10 +576,10 @@ ptm_map* ptm_load(const char* file_path) {
   fseek(file, 0, SEEK_SET);
   void* arena = PTM_ACREATE(source_length);
   char* source = (char*)PTM_APUSH(arena, source_length);
-  fread(source, 1, source_length, file);
+  source_length = fread(source, 1, source_length, file);
   fclose(file);
   ptm_map* map = ptm_load_source(source, source_length);
-  PTM_ARENA_FREE(arena);
+  PTM_AFREE(arena);
   return map;
 }
 #endif
