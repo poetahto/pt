@@ -2,6 +2,17 @@
 #include "pt_map.h"
 #include <stdio.h>
 
+static int count_brushes(ptm_brush* brush) {
+  int count = 0;
+
+  while (brush != NULL) {
+    count++;
+    brush = brush->next;
+  }
+
+  return count;
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     printf("USAGE: %s <map file>\n", argv[0]);
@@ -9,32 +20,41 @@ int main(int argc, char** argv) {
   }
 
   const char* map_file_name = argv[1];
-  ptm_map map;
-  ptm_load(map_file_name, &map);
-  int total_brushes = 0;
+  ptm_map* map = ptm_load(map_file_name);
+  
+  int brush_count = 0;
+  int entity_class_count = 0;
+  int entity_count = 0;
 
-  // print worldspawn info
-  printf("WORLDSPAWN: %i brushes\n", map.world.brush_count);
-  total_brushes += map.world.brush_count;
+  // print world info
+  int world_brush_count = count_brushes(map.world_brushes);
+  printf("WORLDSPAWN: %i brushes\n", world_brush_count);
+  brush_count += world_brush_count;
+  ptm_property* world_property = map.world_properties;
 
-  for (int i = 0; i < map.world.property_count; i++) {
-    char* key = map.world.property_keys[i];
-    char* value = map.world.property_values[i];
-    printf("  \"%s\" \"%s\"\n", key, value);
+  while (world_property != NULL) {
+    printf("  \"%s\" \"%s\"\n", world_property->key.data, world_property->value.data);
+    world_property = world_property->next;
   }
 
-  // print class info
-  for (int cid = 0; cid < map.class_count; cid++) {
-    ptm_class* class = &map->classes[cid];
-    printf("%s: %i entities\n", class->name, class->entity_count);
+  // print entity info
+  ptm_entity_class* entity_class = map.entity_classes;
 
-    for (int eid = 0; eid < class->entity_count; eid++) {
-      ptm_entity* entity = &class->entities[eid];
-      total_brushes += entity->brush_count;
+  while (entity_class != NULL) {
+    ptm_entity* entity = entity_class->entities;
+
+    while (entity != NULL) {
+      brush_count += count_brushes(entity->brushes);
+      entity_count++;
+      entity = entity->next;
     }
+
+    printf("%s: %i entities\n", entity_class->name.data, entity_count);
+    entity_class_count++;
+    entity_class = entity_class->next;
   }
 
-  printf("\nparsed %s, %i total brushes\n", map_file_name, total_brushes);
-  ptm_free(&map);
+  printf("\n%s: %i brushes, %i classes, %i entities\n", map_file_name, brush_count, entity_class_count, entity_count);
+  ptm_free(map);
   return 0;
 }

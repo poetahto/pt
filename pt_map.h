@@ -14,7 +14,7 @@
       #define PTM_ASSERT(expr)
         change how assertions are enforced
 
-      #define PTM_ARENA_CREATE/ALLOC/FREE
+      #define PTM_ACREATE/APUSH/AFREE
         change arena allocation strategy
 
       #define PTM_HASH/CREATE_HASH
@@ -91,7 +91,7 @@
 #define PTM_HASH unsigned int
 
 typedef struct ptm_string {
-  char* value;
+  char* data;
   PTM_HASH hash;
 } ptm_string;
 
@@ -133,13 +133,14 @@ typedef struct ptm_map {
   ptm_entity_class* groups;
   ptm_property* world_properties;
   ptm_brush* world_brushes;
+  void* arena;
 } ptm_map;
 
 #ifndef PTM_NO_STDIO
-void ptm_load(const char* file_path, ptm_map* map);
+ptm_map* ptm_load(const char* file_path);
 #endif 
 
-void ptm_load_source(const char* source, int source_length, ptm_map* map);
+ptm_map* ptm_load_source(const char* source, int source_length);
 void ptm_free(ptm_map* map);
 
 /* === END HEADER === */
@@ -157,12 +158,11 @@ void ptm_free(ptm_map* map);
 #endif
 
 #ifndef PTM_APUSH
+#include <stdlib.h>
 #define PTM_ACREATE(capacity) ptm__arena_create(capacity)
 #define PTM_APUSH(arena, bytes) ptm__arena_push(arena, bytes)
 #define PTM_AFREE(arena) ptm__arena_free(arena)
-
-#include <stdlib.h>
-
+// Simple, fixed-size arena implementation based on malloc/free
 typedef struct ptm_arena {
   char* data;
   int head;
@@ -176,7 +176,6 @@ static void* ptm__arena_create(int capacity) {
   arena->head = 0;
   return arena;
 }
-
 static void* ptm__arena_push(void* opaque_arena, int bytes) {
   ptm_arena* arena = (ptm_arena*)opaque_arena;
   PTM_ASSERT(arena->head + bytes <= arena->capacity);
@@ -184,13 +183,11 @@ static void* ptm__arena_push(void* opaque_arena, int bytes) {
   arena->head += bytes;
   return result;
 }
-
 static void ptm__arena_free(void* opaque_arena) {
   ptm_arena* arena = (ptm_arena*)opaque_arena;
   free(arena->data);
   free(arena);
 }
-
 #endif
 
 #ifndef PTM_STRTOR
@@ -245,13 +242,6 @@ static void ptm__copy_memory(void* dest, const void* src, int bytes) {
     d[i] = s[i];
 }
 
-static void ptm__zero_memory(void* memory, int bytes) {
-  char* m = (char*)memory;
-
-  for (int i = 0; i < bytes; i++)
-    m[i] = 0;
-}
-
 static void ptm__consume_until_at(const char** head, char value) {
   while (**head != value)
     (*head)++;
@@ -275,12 +265,10 @@ static PTM_REAL ptm__consume_number(const char** head) {
   return value;
 } 
 
-PTM_DECLARE_LIST(string)
-
 typedef struct ptm_cached_string {
   struct ptm_cached_string* next;
   ptm_string content;
-} ptm_string_cache;
+} ptm_cached_string;
 
 static ptm_string ptm__consume_string(const char** head, char delimiter, ptm_cached_string** cache, void* arena) {
   // Parse a string between delimiters at head
@@ -304,14 +292,14 @@ static ptm_string ptm__consume_string(const char** head, char delimiter, ptm_cac
   }
 
   // Allocate new string from parsed value
-  char* value = (char*)PTM_APUSH(arena, length + 1);
-  ptm__copy_memory(value, start, length);
-  value[length] = '\0';
+  char* data = (char*)PTM_APUSH(arena, length + 1);
+  ptm__copy_memory(data, start, length);
+  data[length] = '\0';
 
   // Add new string to cache
   ptm_cached_string* new_string = (ptm_cached_string*)PTM_APUSH(arena, sizeof *new_string);
   new_string->content.hash = hash;
-  new_string->content.value = value;
+  new_string->content.data = data;
   new_string->next = *cache;
   *cache = new_string;
 
@@ -344,43 +332,45 @@ typedef enum ptm_scope {
   PTM_SCOPE_BRUSH,
 } ptm_scope;
 
-void ptm_load_source(const char* source, int source_length, ptm_map* map) {
-  const char* head = source;
-  const char* end = source + source_length + 1;
-
+ptm_map* ptm_load_source(const char* source, int source_length) {
+  // Cache some hashed strings that we frequently evaluate
   PTM_HASH hash_classname = PTM_CREATE_HASH("classname");
   PTM_HASH hash_worldspawn = PTM_CREATE_HASH("worldspawn");
   PTM_HASH hash_func_group = PTM_CREATE_HASH("func_group");
 
+  // Initialize the map structure that will be returned
   void* arena = PTM_ACREATE(source_length);
   ptm_map* map = (ptm_map*)PTM_APUSH(arena, sizeof *map);
+  *map = {0};
+  map->arena = arena;
+
+  // Initialize state that isn't returned, but helps a lot while parsing
   ptm_cached_string* string_cache = NULL;
   ptm_entity* scoped_entity = NULL;
   ptm_brush* scoped_brush = NULL;
   ptm_scope scope = PTM_SCOPE_MAP;
 
-  // TODO: I have a feeling this loop is insecure/has
-  // some overrun potential, given how unpredictably
-  // we move the read head
-  
+  // Tracking for our current position in the source, and when to stop
+  const char* head = source;
+  const char* end = source + source_length + 1;
+
   while (head < end) {
     // Leading whitespace does not affect the meaning of a line
     ptm__consume_whitespace(&head);
 
     switch (ptm__identify_line(&head)) {
+      // Line format: "// this is a comment"
       case PTM_LINE_INVALID:
       case PTM_LINE_COMMENT: {
         // Don't do anything with a comment or invalid line
         break;
       }
-
-      // When we "increase" or start scope, we are adding a new
-      // child object to the parent (e.g. new brush for an
-      // entity, or new entity for a map).
-
+      // Line format: "{"
       case PTM_LINE_SCOPE_START: {
         PTM_ASSERT(scope != PTM_SCOPE_BRUSH);
 
+        // We need to begin processing a new entity/brush:
+        // allocate some memory in the arena.
         if (scope == PTM_SCOPE_MAP) {
           scope = PTM_SCOPE_ENTITY;
           scoped_entity = (ptm_entity*)PTM_APUSH(arena, sizeof ptm_entity);
@@ -392,19 +382,15 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
 
         break;
       }
-
-      // When we "decrease" or end scope, we finalize the addition
-      // of a child object, and are certain it is fully 
-      // initialized. This is useful for, say, merging
-      // func_groups into worldspawn instead of as
-      // a normal entity.
-
+      // Line format: }
       case PTM_LINE_SCOPE_END: {
         PTM_ASSERT(scope != PTM_SCOPE_MAP);
 
+        // We have finished processing an entity: now we need to determine 
+        // where it should be stored.
         if (scope == PTM_SCOPE_ENTITY) {
           PTM_ASSERT(scoped_entity != NULL);
-	        PTM_ASSERT(scoped_entity->class_name.value != NULL);
+	        PTM_ASSERT(scoped_entity->class_name.data != NULL);
           scope = PTM_SCOPE_MAP;
   
           ptm_string class_name = scoped_entity->class_name;
@@ -459,10 +445,7 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
         }
         break;
       }
-
-      // Properties are the key-value pairs that define
-      // gameplay data for the entities.
-
+      // Line format: "property_key" "property_value"
       case PTM_LINE_PROPERTY: {
         PTM_ASSERT(scope == PTM_SCOPE_ENTITY);
         PTM_ASSERT(scoped_entity != NULL);
@@ -493,10 +476,7 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
 
         break;
       }
-
-      // Brush faces are the complex numeric lines that define
-      // every mesh-related and visible property of an entity.
-      
+      // Line format: (x1 y1 z1) (x2 y2 z2) (x3 y3 z3) TEXTURE_NAME [ ux uy uz offsetX ] [ vx vy vz offsetY ] rotation scaleX scaleY
       case PTM_LINE_BRUSH_FACE: {
         PTM_ASSERT(scope == PTM_SCOPE_BRUSH);
         PTM_ASSERT(scoped_brush != NULL);
@@ -569,83 +549,8 @@ void ptm_load_source(const char* source, int source_length, ptm_map* map) {
     }
   }
 
-  // We finished parsing the entire file structure.
-  // All of our data was stored in linked lists, because we
-  // were not sure of the size beforehand.
-
-  // However, our returned struct wants to store continuous
-  // arrays of data that are tightly packed into memory
-  // for efficient iteration and fast freeing: thus, we
-  // compact things with an array allocator and release
-  // the old linked lists.
-  void* arena = PTM_ARENA_CREATE(source_length);
-
-  // Allocate map storage
-  int size = sizeof(ptm_entity) * entity_list_length;
-  ptm_entity* entities = (ptm_entity*)PTM_ARENA_ALLOC(arena, size);
-  int entity_count = 0;
-
-  while (entity_list != NULL) {
-    ptm_entity* entity = &entities[entity_count++];
-
-    // Copy entities
-    size = sizeof(ptm_brush) * entity_list->brush_list_length;
-    entity->brushes = (ptm_brush*)PTM_ARENA_ALLOC(arena, size);
-    ptm_brush_node* brush_list = entity_list->brush_list;
-
-    while (brush_list != NULL) {
-      // Copy brushes
-      ptm_brush* brush = &entity->brushes[entity->brush_count++];
-      size = sizeof(ptm_brush_face) * brush_list->face_list_length;
-      brush->faces = (ptm_brush_face*)PTM_ARENA_ALLOC(arena, size);
-      ptm_brush_face_node* face_list = brush_list->face_list;
-
-      while (face_list != NULL) {
-        // Copy faces
-        brush->faces[brush->face_count++] = face_list->value;
-
-        // Free old faces
-        ptm_brush_face_node* next_face = face_list->next;
-        PTM_FREE(face_list);
-        face_list = next_face;
-      }
-
-      // Free old brushes
-      ptm_brush_node* next_brush = brush_list->next;
-      PTM_FREE(brush_list);
-      brush_list = next_brush;
-    }
-
-    // Copy properties
-    size = sizeof(char*) * entity_list->property_list_length;
-    entity->property_keys = (char**)PTM_ARENA_ALLOC(arena, size);
-    entity->property_values = (char**)PTM_ARENA_ALLOC(arena, size);
-    ptm_property_node* property_list = entity_list->property_list;
-
-    while (property_list != NULL) {
-      entity->property_keys[entity->property_count] = property_list->key;
-      entity->property_values[entity->property_count] = property_list->value;
-      entity->property_count++;
-
-      // Free old properties
-      ptm_property_node* next_property = property_list->next;
-      PTM_FREE(property_list);
-      property_list = next_property;
-    }
-
-    // Free old entities
-    ptm_entity_node* next_entity = entity_list->next;
-    PTM_FREE(entity_list);
-    entity_list = next_entity;
-  }
-
-  // Clean up old arenas that are no longer used
-  PTM_ARENA_FREE(cache.node_arena);
- 
-  // populate final structure
-  map->entities = entities;
-  map->entity_count = entity_count;
-  map->arena = arena;
+  // We finished parsing the map: return final structure
+  return map;
 }
 
 void ptm_free(ptm_map* map) {
@@ -654,7 +559,7 @@ void ptm_free(ptm_map* map) {
 
 #ifndef PTM_NO_STDIO
 #include <stdio.h>
-void ptm_load(const char* file_path, ptm_map* map) {
+ptm_map* ptm_load(const char* file_path) {
   FILE* file; 
 #if defined(_MSC_VER) && _MSC_VER >= 1400
   fopen_s(&file, file_path, "r");
@@ -664,12 +569,13 @@ void ptm_load(const char* file_path, ptm_map* map) {
   fseek(file, 0, SEEK_END);
   int source_length = ftell(file);
   fseek(file, 0, SEEK_SET);
-  void* arena = PTM_ARENA_CREATE(source_length);
-  char* source = (char*)PTM_ARENA_ALLOC(arena, source_length);
+  void* arena = PTM_ACREATE(source_length);
+  char* source = (char*)PTM_APUSH(arena, source_length);
   fread(source, 1, source_length, file);
   fclose(file);
-  ptm_load_source(source, source_length, map);
+  ptm_map* map = ptm_load_source(source, source_length);
   PTM_ARENA_FREE(arena);
+  return map;
 }
 #endif
 
