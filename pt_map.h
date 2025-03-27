@@ -88,6 +88,17 @@
 #define PTM_REAL float
 #define PTM_HASH unsigned int
 
+#define PTM_COPY_LIST(src, dst, type)           \
+{                                               \
+  type* node = src;                             \
+  int counter = 0;                              \
+                                                \
+  while (node != NULL) {                        \
+    dst[counter++] = *node;                     \
+    node = node->next;                          \
+  }                                             \
+}                                               \
+
 typedef struct ptm_string {
   char* data;
   PTM_HASH hash;
@@ -106,6 +117,7 @@ typedef struct ptm_brush_face {
 typedef struct ptm_brush {
   struct ptm_brush* next;
   ptm_brush_face* faces;
+  int face_count;
 } ptm_brush;
 
 typedef struct ptm_property {
@@ -119,18 +131,24 @@ typedef struct ptm_entity {
   ptm_string class_name;
   ptm_property* properties;
   ptm_brush* brushes;
+  int property_count;
+  int brush_count;
 } ptm_entity;
 
 typedef struct ptm_entity_class {
   struct ptm_entity_class* next;
   ptm_string name;
   ptm_entity* entities;
+  int entity_count;
 } ptm_entity_class;
 
 typedef struct ptm_map {
   ptm_entity_class* entity_classes;
+  int entity_class_count;
   ptm_property* world_properties;
+  int world_property_count;
   ptm_brush* world_brushes;
+  int world_brush_count;
   void* arena;
 } ptm_map;
 
@@ -240,6 +258,13 @@ static void ptm__copy_memory(void* dest, const void* src, int bytes) {
     d[i] = s[i];
 }
 
+static void ptm__zero_memory(void* dest, int bytes) {
+  char* d = (char*)dest;
+
+  for (int i = 0; i < bytes; i++)
+    d[i] = 0;
+}
+
 static void ptm__consume_until_at(const char** head, char value) {
   while (**head != value)
     (*head)++;
@@ -338,9 +363,7 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
   // Initialize the map structure that will be returned
   void* arena = PTM_ACREATE(source_length * 2);
   ptm_map* map = (ptm_map*)PTM_APUSH(arena, sizeof *map);
-  map->world_properties = NULL;
-  map->world_brushes = NULL;
-  map->entity_classes = NULL;
+  ptm__zero_memory(map, sizeof *map);
   map->arena = arena;
 
   // Initialize state that isn't returned, but helps a lot while parsing
@@ -373,15 +396,12 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
         if (scope == PTM_SCOPE_MAP) {
           scope = PTM_SCOPE_ENTITY;
           scoped_entity = (ptm_entity*)PTM_APUSH(arena, sizeof(ptm_entity));
-          scoped_entity->next = NULL;
-          scoped_entity->brushes = NULL;
-          scoped_entity->properties = NULL;
+          ptm__zero_memory(scoped_entity, sizeof(ptm_entity));
         }
         else if (scope == PTM_SCOPE_ENTITY) {
           scope = PTM_SCOPE_BRUSH;
           scoped_brush = (ptm_brush*)PTM_APUSH(arena, sizeof(ptm_brush));
-          scoped_brush->next = NULL;
-          scoped_brush->faces = NULL;
+          ptm__zero_memory(scoped_brush, sizeof(ptm_brush));
         }
 
         break;
@@ -412,11 +432,13 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
 
             brush->next = map->world_brushes;
             map->world_brushes = scoped_entity->brushes;
+            map->world_brush_count += scoped_entity->brush_count;
           }
 
           // "worldspawn" properties define the "world" entity properties
           if (class_name.hash == hash_worldspawn) {
             map->world_properties = scoped_entity->properties;
+            map->world_property_count = scoped_entity->property_count;
           }
 
           if (!is_world_entity) {
@@ -433,16 +455,21 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
             // Create a new class if one doesn't exist
             if (entity_class == NULL) {
               entity_class = (ptm_entity_class*)PTM_APUSH(arena, sizeof *entity_class);
+              ptm__zero_memory(entity_class, sizeof *entity_class);
               entity_class->name = class_name;
+
               entity_class->next = map->entity_classes;
-              entity_class->entities = NULL;
               map->entity_classes = entity_class;
+              map->entity_class_count++;
             }
 
             // Add the scoped entity to it's class
             scoped_entity->next = entity_class->entities;
             entity_class->entities = scoped_entity;
+            entity_class->entity_count++;
           }
+
+          scoped_entity = NULL;
         }
         else if (scope == PTM_SCOPE_BRUSH) {
           PTM_ASSERT(scoped_entity != NULL);
@@ -452,6 +479,10 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
           // Adding a brush is much easier than an entity: no special cases, just add
           scoped_brush->next = scoped_entity->brushes;
           scoped_entity->brushes = scoped_brush;
+          scoped_entity->brush_count++;
+          //printf("Added brush to %s (%i total)\n", scoped_entity->class_name.data, scoped_entity->brush_count);
+          
+          scoped_brush = NULL;
         }
         break;
       }
@@ -482,6 +513,7 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
           // Non-classname properties get added to the scoped entity's list
           property->next = scoped_entity->properties;
           scoped_entity->properties = property;
+          scoped_entity->property_count++;
         }
 
         break;
@@ -493,8 +525,10 @@ ptm_map* ptm_load_source(const char* source, int source_length) {
 
         // Add a new brush face to the current brush's list
         ptm_brush_face* face = PTM_APUSH(arena, sizeof *face);
+
         face->next = scoped_brush->faces;
         scoped_brush->faces = face;
+        scoped_brush->face_count++;
 
         // First, we parse the 3 triangle points that comprise our plane.
         PTM_REAL p[3][3];
