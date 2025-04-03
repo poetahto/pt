@@ -22,15 +22,23 @@ int main(int argc, char** argv) {
   int total_entity_count = 0;
 
   // print world info
-  printf("worldspawn: %i brushes\n\n", map->world_brush_count);
-  total_brush_count += map->world_brush_count;
+  printf("worldspawn: %i brushes\n\n", map->world.brush_count);
+  total_brush_count += map->world.brush_count;
 
-  // print entity info
+  // create sorted array of entity classes
   int count = map->entity_class_count;
   ptm_entity_class* list = malloc(sizeof(*list) * count);
-  PTM_COPY_LIST(map->entity_classes, list, ptm_entity_class);
+  int index = 0;
+  ptm_entity_class* entity_class = map->entity_classes;
+
+  while (entity_class != NULL) {
+    list[index++] = *entity_class;
+    entity_class = entity_class->next;
+  }
+
   qsort(list, count, sizeof(*list), compare_entity_classes);
 
+  // print entity info
   for (int i = 0; i < count; i++) {
     int brush_count = 0;
     ptm_entity* entity = list[i].entities;
@@ -56,6 +64,7 @@ int main(int argc, char** argv) {
   }
 
   printf("\n%s: %i brushes, %i classes, %i entities\n", map_file_name, total_brush_count, map->entity_class_count, total_entity_count);
+  free(list);
   ptm_free(map);
   return 0;
 }
